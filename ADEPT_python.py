@@ -1,43 +1,166 @@
 import numpy as np
 from scipy.integrate import solve_ivp
+import skfem as fem
+from skfem.helpers import dot, grad
+
+class pipe(object):
+    
+    def __init__(self, length, radius, roughness, temperature, del_Asp0: np.array, del_DM0: np.array):
+        '''
+        del_Asp0: initial deposit thickness (m), assuming only asphaltenes deposit.
+        del_DM0: initial deposit thickness (m), assuming aromatics and resins also deposit.
+        T: temperature of pipe.
+        '''
+        self.L = length
+        self.R = radius
+        self.rough = roughness
+        self.T = temperature
+        self.del_Asp0 = del_Asp0
+        self.del_DM0 = del_DM0
+
+
+class sim(object):
+    
+    def __init__(self, SimTime, mass_flow_rate, C0, kP_param, kAg_param, kD_param, kP_model, kAg_model, SR_param):
+        self.t = SimTime    # simulation time (s)
+        self.mFlow = mass_flow_rate
+        self.C0 = C0
+        self.kP_param = kP_param
+        self.kAg_param = kAg_param
+        self.kD_param = kD_param
+        self.SR_param = SR_param
+        self.kP_model = kP_model
+        self.kAg_model = kAg_model
+
 
 class depo(object):
-    '''
-    depo: 
-    '''
-    def __init__(self, OpTime, m_tot, L, R_pipe, C0, TLUT) -> None:
-        self.OpTime = OpTime 
-        self.m_tot = m_tot
-        self.L = L
-        self.R_pipe = R_pipe
-        self.C0 = C0
+
+    def __init__(self, pipe: pipe, sim: sim, TLUT: np.array, KLUT, mix_phase) -> None:
+        '''
+        TLUT: thermodynamic lookup table, includes
+            Ceq: asphaltene solubility (gAsp[L1]/gAsp[T])
+            beta[V, L1, L2]: phase amounts (mol); beta_wt: phase amounts (wtf); beta_vol: phase amounts (volf)
+            dens[V, L1, L2, Asp]: phase density (g/cc)
+            vol[V, L1, L2]: phase volume (cc/mol)
+            visco[V, L1, L2]: phase viscosity (cP)
+            SP[V, L1, L2, Asp]: solubility parameter (MPa^0.5)
+            yAsp[V, L1, L2]: asphaltene composition (gAsp[k] / g[k])
+        '''
+        self.pipe = pipe
+        self.sim = sim
         self.TLUT = TLUT
+        self.KLUT = KLUT
+        self.rho_mix = mix_phase[0]
+        self.mu_mix = mix_phase[1]
+        self.u_mix = mix_phase[2]
 
-    def func_kP(self, T, P, SP):
-        pass
+    def ADEPT_Diffusivity(self, T, mu, Ds=2.e-9):
+        '''
+        particle diffusivity (m2/s) from Einstein-Stokes equation
+        '''
+        kB = 1.3806504e-23  # Boltzmann constant
+        # particle size
+        if Ds <= 0.:
+            Ds = 2.e-9    # diffusivity (Narmi ADEPT 2019)
 
-    def func_kAg(self, T, P):
-        pass
+        # diffusivity Dm
+        return kB*T / (3*np.pi*mu*Ds) if T > 0. and mu > 0. else Ds 
 
-    def func_kD(self, T, P):
-        pass
+    def ADEPT_fricFactor(self, Re, d=0):
+        '''
+        friction factor
+        '''
+        if Re < 1.e-12:
+            return 0.
+        elif Re < 2400:
+            return 64/Re         # laminar friction factor
+        elif d > 0:
+            return (1.14 - 2*np.log(0.0006*0.3048/d + 21.25/Re**0.9)/np.log(10))**(-2)      # Jain friction factor
+        else:
+            return 0.316/Re**0.25       # Blausius (turbulent) friction factor
 
-    def func_SR_tau(self, T, P):
-        pass
-
-    def func_SR_k(self, T, P):
-        pass
-
-    def func_SR_n(self, T, P):
-        pass
-
-    def func_Velo(self, beta, dens, R_nZ):
-        volFlow = (beta*self.m_Tot / dens) / 1000   # m3/s
+    def phase_velo(self, beta, dens, R_nZ):
+        volFlow = (beta*self.sim.mFlow / dens)   # m3/s
         R = R_nZ        # m
         A = np.pi*R**2  # m2
         A = A.reshape(A.size, 1)    # reshape array to allow numpy to broadcast
         return volFlow/A   # m/s, velo
  
+    def ADEPT_kP(self, A, T, del_SP, eqn='default'):
+        '''
+        Description:  calculates the precipitation kinetics (kP) parameter in the ADEPT model
+        Called by:    ADEPT_Solver
+        Notes:        kP = f(T, SP)
+        
+        --------- INPUTS -----------------------
+        A:            coefficients of correlation (a1, a2, a3, a4)
+        T:            temperature [K]
+        del_SP:       diff in solubility parameter between asphaltene and solvent [MPa^0.5]
+        eqn:      form of correlation ("nrb" or "T" or "T-SP")
+        
+        ---------- RETURN -----------------------
+        kP:        precipitation kinetics (kP) parameter
+        '''
+        if eqn in ['nrb', 'narmi']:
+            # Narmadha Rajan Babu (thesis, 2019)
+            dSP2 = del_SP**2
+            lnkP = -(A[0]*np.exp(-A[1]/T) + (A[2]*np.exp(-A[3]/T)/dSP2))
+        elif eqn in ['t-sp', 'il-sp']:
+            dSP2 = del_SP**2
+            lnkP = np.log(A[0]) - A[1]*1000/(T*dSP2)
+        else:   # eqn = "default"
+            dSP2 = 1.
+            lnkP = np.log(A[0]) - A[1]*1000/(T*dSP2)
+
+        return np.exp(lnkP)
+
+    def ADEPT_kAg(self, A, T, del_SP, visco, eqn='default'):
+        '''
+        Description:  calculates the aggregation kinetics (kAg) parameter in the ADEPT model
+        Called by:    ADEPT_Solver; on-sheet function
+        Notes:        ln(kAg)=f(T,{SP},{mu})
+        
+        --------- INPUTS -----------------------
+        A:            coefficients of correlation (a1, a2, a3, a4)
+        T:            temperature [K]
+        del_SP:       diff in solubility parameter [MPa^0.5] between asphaltene and solvent
+        visco:        viscosity [cP] of solvent
+        eqn:      form of correlation ("nrb" or "IL")
+        
+        --------- RETURN -----------------------
+        kAg:       aggregation kinetics (kAg) parameter
+        '''
+        if eqn == 'nrb':
+            # Narmadha Rajan Babu (thesis, 2019)
+            dSP2 = del_SP**2
+            lnkAg = -(A[0]*np.exp(-A[1]/T) + (A[2]*np.exp(-A[3]/T)/dSP2))
+        else:   # eqn = "default"
+            # a[1] represents the collision efficiency
+            RT = 8.314*T
+            lnkAg = np.log((0.0666667/750)*(RT/visco)*A[0])
+
+        return np.exp(lnkAg)*self.sim.C0
+
+    def ADEPT_kDiss(self, kP):
+        '''
+        kinetics of redissolution
+        '''
+        return 0.01/kP if kP > 0 else 0.01
+
+    def ADEPT_rSR(self, param, tau):
+        '''
+        shear removal rate
+        '''
+        # extract SR parameters
+        tau0 = param[0] 
+        k = param[1]
+        n = param[2]
+        
+        if tau0 == 0:
+            tau0 = 5.       # critical shear stress at wall (Pa), default
+   
+        return k*(tau/tau0 - 1)**n if tau > tau0 else 0.
+
     def mix_Dens(self):
         pass
     
@@ -47,179 +170,198 @@ class depo(object):
     def mix_Velo(self):
         pass
 
-    def Scf(self, Dm, kP, kAg, R_nZ, beta, vol, dens, visco, velo, dt, T, P):
-        """
+    def Dahmkohler(self, R_nZ, T, P, beta, vol, dens, visco, SP, velo, kD_us):
+        '''
         Calculate scaling factor (ScF) & Dahmkohler numbers (Da, reaction parameters) at each spatial point
-        """
-        Re = np.empty(R_nZ.size)
-        Pe = np.empty(R_nZ.size)
-        rSR = np.empty(R_nZ.size)
-        # get kinetic terms
-        kDiss = 0.01 / kP[0]        # Asp redissolution rate (1/s)
-        kD_us = self.func_kD(T, P)  # deposition parameter (unscaled)
-        for i in range(R_nZ.size):
-            R = R_nZ[i]         # radius at segment i
+        Da_P:  precipitation
+        Da_Ag: aggregation
+        Da_D:  deposition
+        '''
+        dens_Z = np.empty_like(R_nZ)
+        visco_Z = np.empty_like(R_nZ)
+        velo_Z = np.empty_like(R_nZ)
+        Re = np.empty_like(R_nZ)
+        Pe = np.empty_like(R_nZ)
+        tau = np.empty_like(R_nZ)
+        kP = np.empty_like(R_nZ)
+        kAg = np.empty_like(R_nZ)
+        kD = np.empty_like(R_nZ)
+        rSR = np.empty_like(R_nZ)
+        Da_P = np.empty_like(R_nZ)
+        Da_Ag = np.empty_like(R_nZ)
+        Da_D = np.empty_like(R_nZ)
+        dt_arr = np.empty_like(R_nZ)
 
-            # calculate avg density, viscosity, velocity
-            wt_Tot = np.sum(beta[i, :2])    # total mass
-            vol_Tot = np.sum(vol[i, :2])    # total volume
+        for iZ in range(R_nZ.size):
+            Rz = R_nZ[iZ]     # radius at spatial point i
+            Tz = T[iZ]
+            Pz = P[iZ]
+            del_SPi = SP[iZ, -1] - SP(iZ, 1)
 
-            wtFrac = beta[i, :2] / wt_Tot         # mass fraction
-            volFrac = vol[i, :2] / vol_Tot      # volume fraction
-            densi = dens[i, :2]
-            visci = visco[i, :2]
-            veloi = velo[i, :2]
-            
+            # mean density, viscosity, velocity
+            beta_sum = np.sum(beta[iZ, :2])     # total mass
+            vol_sum = np.sum(vol[iZ, :2])       # total volume
+
+            betai = beta[iZ, :2]/beta_sum    # mass fraction
+            volfi = vol[iZ, :2]/vol_sum      # volume fraction
+            densi = dens[iZ, :2]
+            SPi = SP[iZ, :2]
+            viscoi = visco[iZ, :2]
+            veloi = velo[iZ, :2]
+
             # density and viscosity averaging (="none" for L1 only, "mass", or "volume")
             # velocity averaging (="none" for L1 only, or "sum")
-            rho = self.mix_Dens("volume", wtFrac, volFrac, densi)
-            mu = self.mix_Visco("volume", wtFrac, volFrac, densi, visci, rho)
-            Uz = self.mix_Velo("sum", wtFrac, veloi)
-            
-            mu *= 10**(-3)      # cP to Pa.s
-            rho *= 1000         # density (kg/m3)
-            kD0 = kD_us[i]      
-            
-            Re[i] = 2*R*Uz*rho / mu       # Reynolds number
-    
-            # axial dispersion corresponding to laminar and turbulent flows, respectively
-            Dax = Dm + (Uz**2 * R**2 / 48) / Dm if Re[i] < 2500 else 2*R*Uz / 5
+            rho = self.mix_Dens(betai, volfi, densi, self.rho_mix)
+            mu = self.mix_Visco(betai, volfi, densi, viscoi, rho, self.mu_mix)
+            uz = self.mix_Velo(betai, veloi, self.u_mix)
 
-            Pe[i] = Uz*self.L/Dax       # Peclet number
+            # store dens, visco, velocity at current length, z (not necessary for current routine)
+            dens_Z[iZ] = rho
+            visco_Z[iZ] = mu
+            velo_Z[iZ] = uz
 
-            # calculate non-dimensional time step (for transient simulation)
-            # dt_arr[i] = dt*Uz/self.L
-                
-        # boundary layer calculation
-        fricFactor = 0.316 / (Re**0.25)             # Blausius friction factor
-        tau = (1/8) * rho * fricFactor * Uz**2      # shear stress at wall, Pa
-        uf = (tau / rho)**0.5                       # friction velocity, m/s
-        del_wall = (mu / rho) / uf                  # wall layer thickness, m
-        del_lam = 5*del_wall                        # laminar boundary layer, m
-        del_mom = 62.7*(2*R)*Re**(-0.875)           # momentum boundary layer, m
+            # residence time (s)
+            t_res = self.pipe.L/uz
+
+            # axial dispersion, Peclet number
+            Dm = self.ADEPT_Diffusivity(Tz, mu)
+            Re[iZ] = 2*Rz*uz*rho/mu                 # Reynolds number
+            Dax = Dm + ((Rz*uz)**2/48)/Dm if Re[iZ] < 2500 else 2*Rz*uz/5
+            Pe[iZ] = uz*self.pipe.L/Dax             # Peclet number
+
+            # boundary layer calculation
+            fricFactor = self.ADEPT_fricFactor(Re[iZ])      # friction factor
+            tau[iZ] = (1/8)*rho*fricFactor*uz**2            # shear stress at wall, Pa
+            uf = (tau[iZ] / rho)**0.5                       # friction velocity, m/s
+            del_wall = (mu/rho) / uf                        # wall layer thickness, m
+            del_lam = 5*del_wall                            # laminar boundary layer, m
+            del_mom = 62.7*(2*Rz)*Re[iZ]**(-7/8)            # momentum boundary layer, m
+
+            # choose boundary layer
+            # delta = del_lam
+
+            # ADEPT rate parameters
+            #-- precipitation
+            kP[iZ] = self.ADEPT_kP(self.sim.kP_param, Tz, del_SPi, self.sim.kP_model)
+
+            #-- redissolution
+            kDiss = self.ADEPT_kDiss(0)
+
+            #-- aggregation
+            kAg[iZ] = self.ADEPT_kAg(self.sim.kAg_param, Tz, del_SPi, mu*1000, self.sim.kAg_model)
+
+            #-- deposition
+            kD0 = kD_us[iZ]         # unscaled depo parameter (=0 to turn off deposition term)
+            if kD0 == 0:
+                kD[iZ] = 0.
+            elif np.sum(self.sim.kD_param) == 0:
+                kD[iZ] = kD0
+
+            # 'TEMP (from v2.44)
+            # 'scale deposition constant
+            # Dm = ADEPT_Diffusivity()
+            # delta = del_lam
+            # phi = Dm / delta**2 / kD0
+            # ScF = 2 * delta / R * (phi / (phi + 1))
+            # kD(iZ) = ScF * kD0
+            # '/TEMP
+
+            #-- shear removal rate, rSR
+            rSR[iZ] = self.ADEPT_rSR(self.sim.SR_param, tau[iZ])
+
+            # Damkohler numbers
+            Da_P[iZ] = kP[iZ]*t_res
+            Da_Ag[iZ] = kAg[iZ]*t_res
+            Da_D[iZ] = kD[iZ]*(1 - rSR[iZ])*t_res
+
+        return kP, kAg, kD, Da_P, Da_Ag, Da_D, rSR
+
+    def ADEPT_Solver_Cf(self, Cf0, nZ, dt, dz, Da_P, Ceq):
+        Cf = np.empty(nZ)
+        alpha = dt/dz
+
+        A = np.zeros((nZ - 2, nZ - 2))
+        B = np.zeros_like(A)
         
-        # choose boundary layer
-        Del = del_lam
+        np.fill_diagonal(A, 1 + dt*Da_P[1:nZ-1])
+        np.fill_diagonal(B, Da_P[1:nZ-1])
 
-        # scale deposition constant
-        phi = (Dm / Del**2) / kD0
-        Scf = (2*Del / R)*(phi / (phi + 1))
-        kD = Scf*kD0
-            
-        # shear removal rate, rSR
-        tau_0 = self.fun_SR_tau(T, P)
-        kSR = self.fun_SR_k(T, P)
-        nSR = self.fun_SR_n(T, P)
-
-        for i in range(R_nZ.size):
-            rSR[i] = kSR[i]*(tau[i]/tau_0[i] - 1)**nSR[i] if tau[i] > tau_0[i] else 0.
-            
-        # Dahmkohler numbers
-        Da_P = kP*self.L / Uz
-        Da_Ag = kAg*self.L / Uz
-        Da_D = kD*(1 - rSR)*self.L / Uz
-
-        return Scf, kD, kDiss, Da_P, Da_Ag, Da_D, rSR
+        for i in range(nZ - 3):
+            A[i, i+1] = alpha/2
+            A[i+1, i] = -alpha/2
         
+        v = Ceq[1:nZ-1]
+        u0 = Cf0[1:nZ-1]
+
+        C = u0 + dt*np.matmul(B, v)
+
+        u = np.linalg.solve(A, C)
+
+        Cf[0] = 1.  # Boundary condition
+        Cf[1:nZ-1] = u
+        Cf[nZ] = 0. # What value should be used?
+        return Cf
+
+    def ADEPT_Solver_C(self):
+        pass
+
     def energy_model(self, T, TLUT):
         pass
 
     def well_model(self, P, TLUT):
         pass
 
-    def ADEPT_Solver_Cf(self):
-        '''
-        Program:      ADEPT_Solver_Cf
-        Description:  solves PDE for dissolved asphaltene conc (Cf)
-        Called by:    ADEPT_Solver
-        Notes:        see PDE formulation below
-    
-    ---------- INPUTS ----------------------
-        --- scalars ---
-        t0:       initial time
-        nT:       number of time nodes
-        dt:       array of time steps. made into an array to take into account the varying Uz along tubing
-        z0:       initial length
-        nZ:       number of steps in length
-        dz:       length step
-        Cf_in:    dissolved asphaltene conc in the input stream
-    
-        --- vectors --- (len = num of spatial points)
-        Cf_t0:    array of initial (t=0) dissolved asphaltene conc
-        Da_p:     precipitation Dahmkohler number
-        Ceq:      asphaltene solubility (gAsp_L1 / gAsp_Ovr)
-    
-        --- solver settings ---
-        SS:       {0 = transient, 1 = steady-state}
-        SolverType:   {"IE" = implicit euler, "EE" = explicit euler}
-    
-    ---------- OUTPUTS ---------------------
-        Cf:       dissolved asphaltene conc (gAsp_L1 / gAsp_Ovr)
-    
-    ---------- NOTES -----------------------
-        PDE for dissolved asphaltene conc:
-        dCf/dt = -dCf/dz - Da_p.(Cf-Ceq)
-        IC: Cf(t=0,z) =1    (all Asp dissolved at t=0)
-        BC: Cf(t,z=0) =1    (all Asp dissolved at z=0)
-        '''
-        pass
-
-    def ADEPT_Solver_C(self):
-        pass
-
-    def ADEPT_Solver(self, T_b, T_t, T_prof, P_b, P_t, P_prof, del_Asp0: np.array, del_DM0: np.array, GOR0):
+    def ADEPT_Solver(self, BHT, WHT, BHP, WHP, GOR, nZ):
         '''
         Solves asphaltene material balance
-
-        TLUT: thermodynamic lookup table
-        Ceq: asphaltene solubility (gAsp[L1]/gAsp[T])
-        beta[V,L1,L2]: phase amounts (mol); beta_wt: phase amounts (wtf); beta_vol: phase amounts (volf)
-        dens[V,L1,L2,Asp]: phase density (g/cc)
-        vol[V,L1,L2]: phase volume (cc/mol)
-        visco[V,L1,L2]: phase viscosity (cP)
-        SP[V,L1,L2,Asp]: solubility parameter (MPa^0.5)
+        
+        Notes:
+            1.- Should we choose the time step according to the characteristic time of formation of deposit?
+            2.- Use scikit-FEM to solve all PDEs
 
         arguments:
 
         return:
             depo_return object
         '''
-        nZ = 129
-        Dm = 2.e-9      # particle diffusivity (m2/s) from Einstein-Stokes equation
-        dz = 1/(nZ - 1)
+        # z-axis step size
+        dz = 1/nZ
 
-        z = np.linspace(0, self.L, nZ, dtype=np.float64)
+        # time-step size [sec]
+        dt = 1 
 
-        mT = (T_t - T_b)/self.L
-        mP = (P_t - P_b)/self.L
-
-        # T and P initial profiles
-        T = mT*z + T_b
-        P = mP*z + P_b
-
-        # initial GOR
-        GOR = GOR0
+        # Temperature and Pressure initial profiles
+        L = self.pipe.L
+        z = np.linspace(0, L, nZ)
+        xp = [0, L]
+        T = np.interp(z, xp, fp=[BHT, WHT])
+        P = np.interp(z, xp, fp=[BHP, WHP])
 
         # initial conditions
-        Cf_t0 = np.ones(nZ)     #assumes all asphaltenes are soluble at t=0
-        C_t0 = np.zeros(nZ)     #assumes no primary particles (PP) at t=0
+        Cf_t0 = np.ones(nZ)     # assumes all asphaltenes are soluble at t=0
+        C_t0 = np.zeros(nZ)     # assumes no primary particles (PP) at t=0
                    
         # initial deposition thickness along the pipe
-        del_Asp = del_Asp0
-        del_DM = del_DM0
-        
+        del_Asp = self.pipe.del_Asp0
+        del_DM = self.pipe.del_DM0
+
+        Asp_kD = self.KLUT['Asp_kD']
+        kD_us = np.interp(z, xp, fp=[Asp_kD[0], Asp_kD[-1]])
+
         #--- time march loop ---
-        for dt in range(self.OpTime*86000):
+        t = 0.
+        while t < self.sim.t:
 
             # extract thermo and transport properties from TLUT
-            TLUT = self.read_TLUT(T, P, GOR)
+            TLUT_slice = self.read_TLUT((T, P, GOR), self.TLUT)
 
             # extract beta and dens at each spatial point
-            beta = TLUT['beta']
-            dens = TLUT['dens']
-            vol = TLUT['vol']
-            visco = TLUT['visco']
-            yAsp = TLUT['yAsp']
+            Ceq = TLUT_slice['Ceq']
+            beta = TLUT_slice['beta']
+            dens = TLUT_slice['dens']
+            vol = TLUT_slice['vol']
+            visco = TLUT_slice['visco']
+            SP = TLUT_slice['SP']
 
             # update radius profile due to restriction
             R_nZ_Asp = self.R_pipe - (del_Asp/100)
@@ -227,17 +369,15 @@ class depo(object):
             R_nZ = R_nZ_DM
 
             # calculate phase velocity at each point from mass flows
-            velo = self.func_Velo(beta, dens, R_nZ)
-
-            kP = self.func_kP(T, P, TLUT['SP'])
-            kAg = self.func_kAg(T, P)
+            velo = self.phase_velo(beta, dens, R_nZ)
+            veloL1 = velo[:, 1]
 
             # calculate scaling factor & Dahmkohler numbers
-            Scf, kD, kDiss, Da_P, Da_Ag, Da_D, rSR = self.Scf(Dm, kP, kAg, R_nZ, beta, vol, dens, visco, velo, dt, T, P)
+            kP, kAg, kD, Da_P, Da_Ag, Da_D, rSR = self.Dahmkohler(self, R_nZ, T, P, beta, vol, dens, visco, SP, velo, kD_us)
 
             #----- solve governing PDEs ----------------------------------------------         
             # solve for conc dissolved asphaltenes: Cf(t,z)
-            Cf = self.ADEPT_Solver_Cf()
+            Cf = self.ADEPT_Solver_Cf(Cf_t0, nZ, dt, dz, Da_P, Ceq)
             
             # solve for conc primary particles: C(t,z)
             C = self.ADEPT_Solver_C()
@@ -287,6 +427,7 @@ class depo(object):
 
             # check P profile (if dP too high, then flow stops (mark time at flow stoppage) and exit time loop)
 
+            t += dt
         #--/ time loop
         return depo_return
 

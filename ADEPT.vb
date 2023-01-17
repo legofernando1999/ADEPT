@@ -1524,7 +1524,7 @@ Public Function ADEPT_Solver_C(T0 As Double, nT As Integer, dT() As Double, Z0 A
 '       rp = Da_p.(Cf-Ceq)          for Cf > Ceq (precipitation)
 '       rp = rdiss = -kdiss.Da_p.C  for Cf < Ceq (redissolution)
 '   IC: C(t=0,z) =0     (no PP at t=0)
-'   BC1: C(t,z=0) =0    (no PP at z=0)
+'   BC1: C(t,z=0) =0    (no PP at z=0) 
 '   BC2: dC/dz(z=1) =0  (no gradient at end of pipe)??
 '==========================================================
 

@@ -331,61 +331,66 @@ class depo(object):
 
     def ADEPT_Solver_C(self, u0, m, k, h, A1, A2, A3, A4, A5, V0, V, F, flux_type='transient'):
         '''
-        PDE for primary particle concentration:
-            dC/dt = 1/Pe*d2C/dz2 - dC/dz + rp - Da_ag*C^2 - Da_d*C
-            rp = Da_p*(Cf-Ceq)      for Cf > Ceq (precipitation)
-            rp = -kdiss.Da_p.C      for Cf < Ceq (redissolution)
-            IC: C(z, t=0) = 0       (no PP at t=0)
-            BC1: C(z=0, t) = 0      (no PP at z=0) 
-            BC2: dC/dz(z=1) = 0     (no gradient at end of pipe)??
+        Solves PDE for primary particle concentration:
+        dC/dt = 1/Pe*d2C/dz2 - dC/dz + rp - Da_ag*C^2 - Da_d*C
+        rp = Da_p*(Cf-Ceq)      for Cf > Ceq (precipitation)
+        rp = -kdiss.Da_p.C      for Cf < Ceq (redissolution)
+        IC: C(z, t=0) = 0       (no PP at t=0)
+        BC1: C(z=0, t) = 0      (no PP at z=0) 
+        BC2: dC/dz(z=1) = 0     (no gradient at end of pipe)?? NOT IMPLEMENTED YET!!
 
         input
-            u0:
-            m:
-            k:
-            h:
-            A1:
-            A2:
-            A3:
-            A4:
-            A5:
-            V0:
-            V:
-            F:
-            flux_type:
+            u0: C at j-th step in t
+            m: number of z-axis steps
+            k: time step size (=T/N)
+            h: z-axis step size (=L/m)
+            A1: Pe, Peclet number
+            A2: Da_Ag at j-th step in t
+            A3: Da_D at j-th step in t
+            A4: Da_P at j-th step in t
+            A5: kDiss at j-th step in t
+            V0: Cf at j-th step in t
+            V: Cf at (j+1)st step in t
+            F: Ceq at j-th step in t
+            flux_type: transient or steady-state (dCf/dt = 0)
         output
-            u: 
+            u: C at (j+1)st step in t
         '''
-        alpha = 0.5*k/h**2
-        beta = 0.25*k/h
+        if flux_type == 'transient':
+            alpha = 0.5*k/h**2
+            beta = 0.25*k/h
 
-        a1 = 1/A1[1:]
-        a2 = A2[1:]
-        a3 = A3[1:]
-        a4 = A4[1:]
-        a5 = A5[1:]
-        w0 = u0[1:]
+            a1 = 1/A1[1:]
+            a2 = A2[1:]
+            a3 = A3[1:]
+            a4 = A4[1:]
+            a5 = A5[1:]
+            w0 = u0[1:]
 
-        v0 = V0[1:]
-        v = V[1:]
-        f = F[1:]
+            v0 = V0[1:]
+            v = V[1:]
+            f = F[1:]
 
-        R0 = np.where(v0 < f, 1., 0.)
-        R = np.where(v < f, 1., 0.)
+            R0 = np.where(v0 < f, 1., 0.)
+            R = np.where(v < f, 1., 0.)
 
-        A = np.diag(1 + 2*alpha*a1 + 0.5*k*a3 + 0.5*k*a5*a4*R) + np.diag(-alpha*a1[:m-2] + beta, k=1) + np.diag(-alpha*a1[1:] - beta, k=-1)
-        B = np.diag(-1 + 2*alpha*a1 + 0.5*k*a3 + 0.5*k*a5*a4*R0) + np.diag(-alpha*a1[:m-2] + beta, k=1) + np.diag(-alpha*a1[1:] - beta, k=-1)
+            A = np.diag(1 + 2*alpha*a1 + 0.5*k*a3 + 0.5*k*a5*a4*R) + np.diag(-alpha*a1[:m-2] + beta, k=1) + np.diag(-alpha*a1[1:] - beta, k=-1)
+            B = np.diag(-1 + 2*alpha*a1 + 0.5*k*a3 + 0.5*k*a5*a4*R0) + np.diag(-alpha*a1[:m-2] + beta, k=1) + np.diag(-alpha*a1[1:] - beta, k=-1)
 
-        r0 = np.where(v0 >= f, 1., 0.)
-        r = np.where(v >= f, 1., 0.)
+            r0 = np.where(v0 >= f, 1., 0.)
+            r = np.where(v >= f, 1., 0.)
 
-        def func(w):
-            return np.matmul(A, w) + 0.5*k*a2*w**2 - 0.5*k*a4*(v - f)*r + np.matmul(B, w0) + 0.5*k*a2*w0**2 - 0.5*k*a4*(v0 - f)*r0
+            def func(w):
+                return np.matmul(A, w) + 0.5*k*a2*w**2 - 0.5*k*a4*(v - f)*r + np.matmul(B, w0) + 0.5*k*a2*w0**2 - 0.5*k*a4*(v0 - f)*r0
 
-        w = fsolve(func, w0)
-        u = np.empty(m)
-        u[0] = 0.   # Boundary condition
-        u[1:] = w
+            w = fsolve(func, w0)
+            u = np.empty(m)
+            u[0] = 0.   # Boundary condition
+            u[1:] = w
+
+        elif flux_type == 'steady-state':
+            u = u0
+
         return u
 
     def energy_model(self, T, TLUT):

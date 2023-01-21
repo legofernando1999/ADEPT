@@ -1,37 +1,54 @@
+# import packages
 import numpy as np
 import json
 from scipy.integrate import odeint
 from scipy.optimize import fsolve
 from scipy.interpolate import RegularGridInterpolator
 
+# TODO: validate against ADEPT-VBA (file: `ADEPT(2023-01-17).xlsm`)
+# TODO: add energy balance model to calculate change in T profile as deposit builds.
+# TODO: add multiphase flow simulator to capture velocity and pressure gradients.
+
+# define constants
+kB = 1.3806504e-23  # Boltzmann constant 
+Pi = np.pi
+
+# <-- REFERENCES -->
+# NRB 2019: Rajan Babu, N. Mechanistic Investigation and Modeling of Asphaltene Deposition, Rice University, Houston, Texas, USA, 2019.
+# 
+
 class pipe(object):
     
     def __init__(self, L: float, R: float, T: float, del_Asp0=None, del_DM0=None) -> None:
         '''
-        L: length of pipe
-        R: radius of pipe
-        T: temperature of pipe
+        L: length of pipe (m)
+        R: radius of pipe (m)
+        T: temperature of pipe (NOTE: why is T input like this but not P?)
         del_Asp0: initial deposit thickness (m), assuming only asphaltenes deposit
         del_DM0: initial deposit thickness (m), assuming aromatics and resins also deposit
+        
+        NOTE: del_Asp0 and del_DM0 are arrays with discrete values of deposit thickness corresponding to the array of `z`. 
+        In case the array of `z` changes from one simulation to the next (which I don't know why it would), 
+        we could fit a polynomial to del_Asp0 and then use this to translate del_Asp0 from one discretization scheme to another. 
         '''
         self.L = L
         self.R = R
-        self.T = T
+        self.T = T  
         self.del_Asp0 = del_Asp0
         self.del_DM0 = del_DM0
 
 
 class sim(object):
     
-    def __init__(self, t_sim: float, mFlow: float, SS: str) -> None:
+    def __init__(self, t_sim: float, mFlow: float, isTransient: bool=True) -> None:
         '''
         t_sim: simulation time
         mFlow: mass flow rate
-        SS: {transient, steady-state}
+        isTransient: {True=transient, False=steady-state}
         '''
         self.t_sim = t_sim
         self.mFlow = mFlow
-        self.SS = SS
+        self.isTransient = isTransient
 
 
 class depo(object):
@@ -61,6 +78,9 @@ class depo(object):
             visco: viscosity mixing (="volume")
             velocity: velocity mixing (="sum")
         '''
+        
+        # NOTE: I would make a method specifically for loading in the TLUT 
+        # and transfer all the details about the TLUT in this docstring to the new method.
         prop_dict = json.load(file) if type(file) != dict else file
 
         self.TLUT = prop_dict['prop_table']
@@ -82,9 +102,9 @@ class depo(object):
             Ro: outer radius
             Ri: inner radius
         output:
-            volume of cylinder
+            volume of hollow cylinder
         '''
-        return np.pi*(Ro**2 - Ri**2)*h
+        return Pi*(Ro**2 - Ri**2)*h
 
     def TLUT_prop(self, Coord: tuple, Prop: str) -> np.array:
         # get index of property 
@@ -100,23 +120,28 @@ class depo(object):
 
     def phase_velo(self, beta: tuple, dens: tuple, R_nZ: np.array) -> tuple:
         mFlow = self.sim.mFlow
-        A = np.pi*R_nZ**2  # m2
-        volFlow_V = mFlow*beta[0]/dens[0]       # m3/s
-        volFlow_L1 = mFlow*beta[1]/dens[1]      # m3/s
-        volFlow_L2 = mFlow*beta[2]/dens[2]      # m3/s
-        return (volFlow_V/A, volFlow_L1/A, volFlow_L2/A)    # m/s, velo
+        A = Pi*R_nZ**2      # m2    
+        
+        # volFlow_V = mFlow*beta[0]/dens[0]       # m3/s
+        # volFlow_L1 = mFlow*beta[1]/dens[1]      # m3/s
+        # volFlow_L2 = mFlow*beta[2]/dens[2]      # m3/s
+        # return (volFlow_V/A, volFlow_L1/A, volFlow_L2/A)    # m/s, velo
+
+        # NOTE: is there a reason you used your method above?
+        volFlow = mFlow * beta / dens # m3/s
+        return volFlow/A
+
 
     def ADEPT_Diffusivity(self, T, mu, Ds=2.e-9):
         '''
         particle diffusivity (m2/s) from Einstein-Stokes equation
         '''
-        kB = 1.3806504e-23  # Boltzmann constant
         # particle size
         if Ds <= 0.:
-            Ds = 2.e-9    # diffusivity (Narmi ADEPT 2019)
+            Ds = 2.e-9    # diffusivity (NRB; ADEPT 2019)
 
         # diffusivity Dm
-        return kB*T / (3*np.pi*mu*Ds) if T > 0. and mu > 0. else Ds 
+        return kB*T / (3*Pi*mu*Ds) if T > 0. and mu > 0. else Ds 
 
     def ADEPT_fricFactor(self, Re, d=0):
         '''
@@ -197,9 +222,7 @@ class depo(object):
         shear removal rate
         '''
         # extract SR parameters
-        tau0 = param[0] 
-        k = param[1]
-        n = param[2]
+        tau0, k, n = param
         
         if tau0 == 0:
             tau0 = 5.       # critical shear stress at wall (Pa), default
@@ -220,14 +243,17 @@ class depo(object):
 
     def Damkohler(self, Rz, T, P, beta, vol, dens, visco, SP, velo, kD_us):
         '''
-        Calculate scaling factor (ScF) & Dahmkohler numbers (Da, reaction parameters) at each spatial point
+        Calculate scaling factor (ScF) & Damkohler numbers (Da, reaction parameters) at each spatial point
         Da_P:  precipitation
         Da_Ag: aggregation
         Da_D:  deposition
+        
+        # NOTE: I would make these inputs (T, P, beta, vol, dens, visco, SP, velo) as attributes to an object and pass that object into this function
         '''
 
         del_SP = SP_Asp - SP_L1
 
+        # NOTE: why not have beta = (beta_V, beta_L1, beta_L2)
         # average density, viscosity, velocity
         beta_sum = beta_V + beta_L1     # total mass
         vol_sum = vol_V + vol_L1        # total volume
@@ -291,9 +317,10 @@ class depo(object):
         Da_Ag = kAg*t_res
         Da_D = kD*(1 - rSR)*t_res
 
+        # NOTE: I would return these in the same object that holds (T, P, beta, vol, dens, etc.)
         return kP, kAg, kD, kDiss, Da_P, Da_Ag, Da_D, rSR, Pe
 
-    def ADEPT_Solver_Cf(self, u0, m, k, h, V, F, BC, SS='transient'):
+    def ADEPT_Solver_Cf(self, u0, m, k, h, V, F, BC, isTransient: bool=True):
         '''
         Solves PDE for dissolved asphaltene concentration (gAsp_L1 / gAsp_Ovr)
         dCf/dt = -dCf/dz - Da_p*(Cf-Ceq)
@@ -312,12 +339,12 @@ class depo(object):
         output
             u: Cf at (j+1)st step in t
         '''
-        if SS == 'transient':
+        if isTransient:
             alpha = 0.25*k/h
 
             # A = np.zeros((m - 1, m - 1))
             # B = np.zeros_like(A)
-            
+
             # np.fill_diagonal(A, 1 + 0.5*k*v[1:])
             # np.fill_diagonal(B, 1 - 0.5*k*v[1:])
 
@@ -329,7 +356,7 @@ class depo(object):
 
             A = np.diag(1 + 0.5*k*v[1:]) + np.diag(alpha*np.ones(m-2), k=1) + np.diag(-alpha*np.ones(m-2), k=-1)
             B = np.diag(1 - 0.5*k*v[1:]) + np.diag(-alpha*np.ones(m-2), k=1) + np.diag(alpha*np.ones(m-2), k=-1)
-            
+
             v = V[1:]
             f = v*F[1:]
             w0 = u0[1:]
@@ -343,12 +370,12 @@ class depo(object):
             u[0] = BC
             u[1:] = w
 
-        elif SS == 'steady-state':
+        elif not isTransient:
             u = u0
 
         return u
 
-    def ADEPT_Solver_C(self, u0, m, k, h, A1, A2, A3, A4, A5, V0, V, F, BC, SS='transient'):
+    def ADEPT_Solver_C(self, u0, m, k, h, A1, A2, A3, A4, A5, V0, V, F, BC, isTransient: bool=True):
         '''
         Solves PDE for primary particle concentration:
         dC/dt = 1/Pe*d2C/dz2 - dC/dz + rp - Da_ag*C^2 - Da_d*C
@@ -376,7 +403,7 @@ class depo(object):
         output
             u: C at (j+1)st step in t
         '''
-        if SS == 'transient':
+        if isTransient:
             alpha = 0.5*k/h**2
             beta = 0.25*k/h
 
@@ -408,7 +435,7 @@ class depo(object):
             u[0] = BC
             u[1:] = w
 
-        elif SS == 'steady-state':
+        elif not isTransient:
             u = u0
 
         return u
@@ -500,7 +527,7 @@ class depo(object):
 
             # extract thermo and transport properties from TLUT at each spatial point
             Coord = (GOR, P, T)
-
+                
             Ceq = self.TLUT_prop(Coord, 'Ceq')
             yAsp_V = self.TLUT_prop(Coord, 'yAsp_V')
             yAsp_L1 = self.TLUT_prop(Coord, 'yAsp_L1')
@@ -523,6 +550,38 @@ class depo(object):
             visco_L1 = self.TLUT_prop(Coord, 'visco_L1')
             visco_L2 = self.TLUT_prop(Coord, 'visco_L2')
 
+            # NOTE: I think you can simplify this by using `with`
+            with self.TLUT_prop:
+                Ceq = (Coord, 'Ceq')
+                yAsp_V = (Coord, 'yAsp_V')
+                yAsp_L1 = (Coord, 'yAsp_L1')
+                yAsp_L2 = (Coord, 'yAsp_L2')
+                beta_V = (Coord, 'wtFrac_V')
+                beta_L1 = (Coord, 'wtFrac_L1')
+                beta_L2 = (Coord, 'wtFrac_L2')
+                vol_V = (Coord, 'volFrac_V')
+                vol_L1 = (Coord, 'volFrac_L1')
+                vol_L2 = (Coord, 'volFrac_L2')
+                dens_V = (Coord, 'dens_V')
+                dens_L1 = (Coord, 'dens_L1')
+                dens_L2 = (Coord, 'dens_L2')
+                dens_Asp = (Coord, 'dens_Asp')
+                SP_V = (Coord, 'SP_V')
+                SP_L1 = (Coord, 'SP_L1')
+                SP_L2 = (Coord, 'SP_L2')
+                SP_Asp = (Coord, 'SP_Asp')
+                visco_V = (Coord, 'visco_V')
+                visco_L1 = (Coord, 'visco_L1')
+                visco_L2 = (Coord, 'visco_L2')
+            
+            # NOTE: It would be more convenient if you could input a tuple of strings and return a tuple of properties
+            beta = self.TLUT_prop(Coord, ('wtFrac_V', 'wtFrac_L1', 'wtFrac_L2'))
+            dens = self.TLUT_prop(Coord, ('dens_V', 'dens_L1', 'dens_L2', 'dens_Asp'))
+            
+            # then to extract the phase amounts, you can write...
+            beta_V, beta_L1, beta_L2 = beta
+            #--/ NOTE
+            
             #zAsp: asphaltene composition (g[Asp]/g[T]) at inlet
             zAsp = beta_V*yAsp_V + beta_L1*yAsp_L1 + beta_L2*yAsp_L2
 

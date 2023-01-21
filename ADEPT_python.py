@@ -14,8 +14,9 @@ kB = 1.3806504e-23  # Boltzmann constant
 Pi = np.pi
 
 # <-- REFERENCES -->
-# NRB 2019: Rajan Babu, N. Mechanistic Investigation and Modeling of Asphaltene Deposition, Rice University, Houston, Texas, USA, 2019.
-# 
+# `NRB 2019a`: Rajan Babu, N. (2019) "Mechanistic Investigation and Modeling of Asphaltene Deposition," Rice University, Houston, Texas, USA, 2019. link: https://www.proquest.com/docview/2568024745?fromopenview=true&pq-origsite=gscholar
+# `NRB 2019b`: Rajan Babu, N. et al. (2019). "Systematic Investigation of Asphaltene Deposition in the Wellbore and Near-Wellbore Region of a Deepwater Oil Reservoir under Gas Injection. Part 2: Computational Fluid Dynamics Modeling of Asphaltene Deposition." doi: https://doi.org/10.1021/acs.energyfuels.8b03239.
+
 
 class pipe(object):
     
@@ -42,8 +43,8 @@ class sim(object):
     
     def __init__(self, t_sim: float, mFlow: float, isTransient: bool=True) -> None:
         '''
-        t_sim: simulation time
-        mFlow: mass flow rate
+        t_sim: simulation time (s)
+        mFlow: mass flow rate (kg/s)
         isTransient: {True=transient, False=steady-state}
         '''
         self.t_sim = t_sim
@@ -60,7 +61,7 @@ class depo(object):
                 Ceq: asphaltene solubility (gAsp[L1]/gAsp[T])
                 beta[V, L1, L2]: phase amounts (wtf)
                 dens[V, L1, L2, Asp]: phase density (kg/m3)
-                vol[V, L1, L2]: phase volume (m3/mol)
+                vol[V, L1, L2]: phase volume (m3/mol) NOTE: volFrac means volume of phase k per total volume. unit would be like m3[k]/m3
                 visco[V, L1, L2, Asp]: phase viscosity (cP)
                 SP[V, L1, L2, Asp]: solubility parameter (MPa^0.5)
                 yAsp[V, L1, L2]: asphaltene composition (gAsp[k] / g[k])
@@ -74,9 +75,9 @@ class depo(object):
             SR_param:   [array] scaling parameters for shear removal (SR) correlation: [tau0, k, n], where tau0=critical shear stress (Pa), k=pre-factor, n=exponent
             SR_model:   [str] model for SR correlation: {'default'}    
         mix_phase
-            dens: density mixing (="volume")
-            visco: viscosity mixing (="volume")
-            velocity: velocity mixing (="sum")
+            dens: density mixing rule (default="volume")
+            visco: viscosity mixing rule (default="volume")
+            velocity: velocity mixing rule (default="sum")
         '''
         
         # NOTE: I would make a method specifically for loading in the TLUT 
@@ -107,6 +108,10 @@ class depo(object):
         return Pi*(Ro**2 - Ri**2)*h
 
     def TLUT_prop(self, Coord: tuple, Prop: str) -> np.array:
+        # NOTE: change `Prop` to a tuple of strings.
+        # if user inputs 1 string, then return 1 value. 
+        # if user inputs n strings in the tuple, then return a tuple of n values
+        
         # get index of property 
         idx = self.prop_label.index(f'{Prop}')
 
@@ -119,6 +124,10 @@ class depo(object):
         return interp(pts)
 
     def phase_velo(self, beta: tuple, dens: tuple, R_nZ: np.array) -> tuple:
+        # NOTE: Is this going to calculate phase velocities at all z?
+        # I would have `beta`, `dens` as np.arrays where the rows correspond to z and columns correspond to phase index.
+        # You could also place `beta`, `dens` in a `FLUID` object and pass them in and access them as attributes of the object.
+        
         mFlow = self.sim.mFlow
         A = Pi*R_nZ**2      # m2    
         
@@ -132,9 +141,11 @@ class depo(object):
         return volFlow/A
 
 
-    def ADEPT_Diffusivity(self, T, mu, Ds=2.e-9):
+    def ADEPT_Diffusivity(self, T: float=0, mu: float=0, Ds=2.e-9):
         '''
         particle diffusivity (m2/s) from Einstein-Stokes equation
+        if T, mu not input, then Dm = Ds
+        if T, mu > 0, then use Einstein-Stokes equation to calculate Dm
         '''
         # particle size
         if Ds <= 0.:
@@ -154,7 +165,7 @@ class depo(object):
         elif d > 0:
             return (1.14 - 2*np.log(0.0006*0.3048/d + 21.25/Re**0.9)/np.log(10))**(-2)      # Jain friction factor
         else:
-            return 0.316/Re**0.25       # Blausius (turbulent) friction factor
+            return 0.316/Re**0.25       # Blasius (turbulent) friction factor
  
     def ADEPT_kP(self, A, T, del_SP, eqn='default'):
         '''
@@ -172,7 +183,7 @@ class depo(object):
         kP:        precipitation kinetics (kP) parameter
         '''
         if eqn in ['nrb', 'narmi']:
-            # Narmadha Rajan Babu (thesis, 2019)
+            # NRB 2019
             dSP2 = del_SP**2
             lnkP = -(A[0]*np.exp(-A[1]/T) + (A[2]*np.exp(-A[3]/T)/dSP2))
         elif eqn in ['t-sp', 'il-sp']:
@@ -201,7 +212,7 @@ class depo(object):
         kAg:       aggregation kinetics (kAg) parameter
         '''
         if eqn == 'nrb':
-            # Narmadha Rajan Babu (thesis, 2019)
+            # NRB 2019a
             dSP2 = del_SP**2
             lnkAg = -(A[0]*np.exp(-A[1]/T) + (A[2]*np.exp(-A[3]/T)/dSP2))
         else:   # eqn = "default"
@@ -248,7 +259,7 @@ class depo(object):
         Da_Ag: aggregation
         Da_D:  deposition
         
-        # NOTE: I would make these inputs (T, P, beta, vol, dens, visco, SP, velo) as attributes to an object and pass that object into this function
+        # NOTE: I would make these inputs (T, P, beta, vol, dens, visco, SP, velo) as attributes to an object (ex: `FLUID`) and pass that object into this function
         '''
 
         del_SP = SP_Asp - SP_L1
@@ -335,7 +346,7 @@ class depo(object):
             V: Da_p at j-th step in t
             F: Ceq at j-th step in t
             BC: boundary condition at inlet (z=0)
-            SS: transient or steady-state (dCf/dt = 0)
+            isTransient: transient or steady-state (dCf/dt = 0)
         output
             u: Cf at (j+1)st step in t
         '''
@@ -370,7 +381,7 @@ class depo(object):
             u[0] = BC
             u[1:] = w
 
-        elif not isTransient:
+        else:
             u = u0
 
         return u
@@ -399,7 +410,7 @@ class depo(object):
             V: Cf at (j+1)st step in t
             F: Ceq at j-th step in t
             BC: boundary condition at inlet (z=0)
-            SS: transient or steady-state (dCf/dt = 0)
+            isTransient: transient or steady-state (dCf/dt = 0)
         output
             u: C at (j+1)st step in t
         '''
@@ -590,8 +601,8 @@ class depo(object):
 
             # mass flows (kg), oil and Asp
             mFlow_Asp = mFlow*zAsp[0]   # kgAsp/s
-            kgOil += mFlow*dt           # kg oil (for full t_sim)
-            kgAsp += mFlow_Asp*dt       # kgAsp (for full t_sim)
+            kgOil += mFlow*dt           # kg Oil (cumulative; added at each dt)
+            kgAsp += mFlow_Asp*dt       # kg Asp (cumulative; added at each dt)
 
             # update radius profile due to restriction
             R_nZ_Asp = R - del_Asp
@@ -603,7 +614,7 @@ class depo(object):
             dens = (dens_V, dens_L1, dens_L2)
             velo = self.phase_velo(beta, dens, R_nZ)
 
-            # calculate scaling factor & Dahmkohler numbers
+            # calculate scaling factor & Damkohler numbers
             vol = (vol_V, vol_L1, vol_L2)
             visco = (visco_V, visco_L1, visco_L2)
             SP = (SP_V, SP_L1, SP_L2)
@@ -663,46 +674,41 @@ class depo(object):
             mass_Asp = V_cyl*dens_Asp
 
             #----- calculate pressure drop (dP) if at (or near) t_out -----
-            Set dict_dP = New Scripting.Dictionary
-            dict_dP("depth_m") = depth_m: dict_dP("P_bh") = P_bh: dict_dP("Units") = dict_TLUT("Units")
-            dict_dP("beta") = beta: dict_dP("vol") = vol: dict_dP("dens") = dens: dict_dP("SP") = SP: dict_dP("visco") = visco: dict_dP("volFlow") = volFlow
-            dict_dP("rho") = dens_Z: dict_dP("mu") = visco_Z: dict_dP("u") = velo_Z:
-            dict_dP("N_Re") = Re: dict_dP("N_Pe") = Pe
             
-            'dP/dt(t=0) (enter only at itr=2 to calculate dp/dt using forward diff)
-            If itr = 2 Then
-                dP = DepoModel_dP(mFlow, L, R, P_bh, delf_DM, dict_dP)
-            End If
+            # NOTE: don't use a dictionary for this part. if you use a FLUID object (as recommended in a previous comment), then all info needed will already be stored there.
+            # Additionally, a lot of this info is not needed because we will not re-calculate properties like Reynolds number in the `depo_model_dP()` function.
             
-            'dP(t~=t_out)
-            If t_new + dt0 >= T_out And t_new <> T_out Then
-                dP = DepoModel_dP(mFlow, L, R, P_bh, delf_DM, dict_dP)
-            End If
-
-            'dP(t=t_out) and dP/dt(t=t_out)
-            If t_new = T_out Then
-                dP = DepoModel_dP(mFlow, L, R, P_bh, delf_DM, dict_dP)
-            End If
+            # Set dict_dP = New Scripting.Dictionary
+            # dict_dP("depth_m") = depth_m: dict_dP("P_bh") = P_bh: dict_dP("Units") = dict_TLUT("Units")
+            # dict_dP("beta") = beta: dict_dP("vol") = vol: dict_dP("dens") = dens: dict_dP("SP") = SP: dict_dP("visco") = visco: dict_dP("volFlow") = volFlow
+            # dict_dP("rho") = dens_Z: dict_dP("mu") = visco_Z: dict_dP("u") = velo_Z:
+            # dict_dP("N_Re") = Re: dict_dP("N_Pe") = Pe
             
-            'extract friction pressure drop, flow status (dP [1]=friction dP; [2]=grav dP; [3]=total (f+g) dP; [4]=flow status)
-            dPf = dP(1)             'friction dP
-            dP_flowStatus = dP(4)   'flow status
+            # NOTE: we will calculate P drop at every t. IL's method was used because we were not updating P drop. In this simulator, we will update the T, P profiles every iteration of the time loop.
             
-            'dP/dt, pressure drop wrt time
-            If dP_flowStatus = "flowing" Then
-                dPf_arr(1) = dPf_arr(2)
-                dPf_arr(2) = dPf
-                If dT > 0 Then
-                    dPdT = (dPf_arr(2) - dPf_arr(1)) / dT * 86400
-                End If
-            End If
+            # store dT, dP results from prev iteration
+            dT0 = dT
+            dPf0, dPg0 = dPf, dPg
             
-            'exit loop if well not flowing
-            If dP_flowStatus <> "flowing" Then
-                If t_noFlow = 0 Then t_noFlow = T_out / 86400
-                'GoTo ExitLoop
-            End If
-            '-----/ pressure drop (dP) calculation -----
+            # dT @ t; NOTE: to be defined
+            dT = energy_balance(self.fluid)
+            
+            # dP @ t; dP=(dPf=friction loss, dPg=gravity loss)
+            dPf, dPg = pressure_drop(mFlow, L, R, del_DM, self.Fluid)
+            
+            # P_wh, update wellhead pressure
+            P_wh = P_bh - (dPf + dPg)
+            P_wh_min = 1    # NOTE: in FP, this is set to atmospheric P (~1 bar, which is the theoretical minimum); we should provide an optional input for setting a higher minimum. 
+            
+            # determine if well still flowing (fluid must be able to overcome pressure drop)
+            if P_wh > P_wh_min:
+                t_noFlow = t    # NOTE: t should represent the current time
+                # GOTO EXITLOOP
+            else:          
+                # dPf/dt, friction pressure drop wrt time      
+                if dt > 0: 
+                    dPf_dt = (dPf0 - dPf) / dt
+            
 
             # update T and P profiles
             # if T_prof != 'cst':
@@ -721,25 +727,28 @@ class depo(object):
 
 class depo_return(object):
     
-    def __init__(self, status, noflow, t_cuts, del_Asp, del_DM, B_Asp, B_DM, J_Asp, C, Cag, Cd, mass_Asp, dP, dT):
+    def __init__(self, flow_status, t_noFlow, t_cuts, del_Asp, del_DM, delf_Asp, delf_DM, J_Asp, C, Cag, Cd, mass_Asp, dP, dT):
         '''
+        # NOTE: I would return thickness (del) or fractional thickness (delf), not both. the user knows the radius, so they can easily post-process the results. 
+        # I don't want to cause confusion by returning properties that represent practically the same quantity.
+        
         object containing:
             flow_status: `flowing`, `shutdown`, `plugged`
             t @ noflow:
             t: time cuts
             thickness: del_Asp(t,z), del_DM(t,z); 
-            blockage: B_Asp(t,z), B_DM(t,z);
+            frac thickness: delf_Asp(t,z), delf_DM(t,z);
             flux: J_Asp(t,z); 
             conc(t,z): C (primary particle), Cag (aggregates), Cd (deposit))
             mass_Asp(t,z) 
             pressure drop: dP(t)
             temperature profile: dT(t)
         '''
-        self.flow_status = status
-        self.noflow = noflow
+        self.flow_status = flow_status
+        self.t_noFlow = t_noFlow
         self.t = t_cuts
         self.thickness = [del_Asp, del_DM]
-        self.blockage = [B_Asp, B_DM]
+        self.delf = [delf_Asp, delf_Asp]
         self.flux = J_Asp
         self.conc = [C, Cag, Cd]
         self.mass = mass_Asp

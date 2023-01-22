@@ -533,9 +533,15 @@ class depo(object):
         # xp = [0, 1]
         # kD_us = np.interp(z, xp, fp=[Asp_kD[0], Asp_kD[-1]])
 
-        #--- time march loop ---
+        #--- time-march loop ---
+        flow_status = 'flowing' #will exit time-march loop when flow_status != 'flowing'
         for _ in range(0, t_sim, dt):
-
+            
+            # update radius profile due to restriction
+            R_nZ_Asp = R - del_Asp
+            R_nZ_DM = R - del_DM
+            R_nZ = R_nZ_DM
+            
             # extract thermo and transport properties from TLUT at each spatial point
             Coord = (GOR, P, T)
                 
@@ -586,11 +592,16 @@ class depo(object):
                 visco_L2 = (Coord, 'visco_L2')
             
             # NOTE: It would be more convenient if you could input a tuple of strings and return a tuple of properties
-            beta = self.TLUT_prop(Coord, ('wtFrac_V', 'wtFrac_L1', 'wtFrac_L2'))
-            dens = self.TLUT_prop(Coord, ('dens_V', 'dens_L1', 'dens_L2', 'dens_Asp'))
+            with self.TLUT_prop:
+                beta = (Coord, ('wtFrac_V', 'wtFrac_L1', 'wtFrac_L2'))
+                dens = (Coord, ('dens_V', 'dens_L1', 'dens_L2', 'dens_Asp'))
             
             # then to extract the phase amounts, you can write...
             beta_V, beta_L1, beta_L2 = beta
+            
+            # NOTE 2: you can take the output tuple from `TLUT_prop()` function and use np.stack to put the tuples in an array
+            beta = np.stack(beta, axis=0) # this assumes the `beta` input is a tuple containing [beta_V, beta_L1, beta_L2]. the output should then be a multi-dimensional numpy array 
+            
             #--/ NOTE
             
             #zAsp: asphaltene composition (g[Asp]/g[T]) at inlet
@@ -603,11 +614,6 @@ class depo(object):
             mFlow_Asp = mFlow*zAsp[0]   # kgAsp/s
             kgOil += mFlow*dt           # kg Oil (cumulative; added at each dt)
             kgAsp += mFlow_Asp*dt       # kg Asp (cumulative; added at each dt)
-
-            # update radius profile due to restriction
-            R_nZ_Asp = R - del_Asp
-            R_nZ_DM = R - del_DM
-            R_nZ = R_nZ_DM
 
             # calculate phase velocity at each point from mass flows
             beta = (beta_V, beta_L1, beta_L2)
@@ -647,7 +653,7 @@ class depo(object):
             # deposition flux [kg/m2/s]. might need to revisit to account for V_bl not V_cell.
             J_Asp = 0.5*rD*R_nZ
 
-            # thickness of asphaltenes and DM deposit (Assumes R >> del which is a good approx for small dt)
+            # thickness of asphaltenes and DM deposit (m) (Assumes R >> del which is a good approx for small dt)
             del_Asp_z = dt*J_Asp/dens_Asp
             del_DM_z = dt*J_Asp/(dens_L2*yAsp_L2)
 
@@ -655,12 +661,17 @@ class depo(object):
             del_DM = np.where(np.abs(J_Asp) > 0., del_DM + del_DM_z, del_DM)
 
             # set maximum deposit thickness to R_pipe
-            del_Asp = np.where(del_Asp < 1.e-8, 0., del_Asp)
             del_Asp = np.where(del_Asp >= R, R, del_Asp)
-
-            del_DM = np.where(del_DM < 1.e-8, 0., del_DM)
             del_DM = np.where(del_DM >= R, R, del_DM)
 
+            # deposit thickness frac (r/R)
+            delf_Asp = del_Asp / R
+            delf_DM = del_DM / R
+            delf_max = delf_Asp.max()
+            
+            if delf_max > 0.999:
+                flow_status = 'shutdown; cross-section is plugged'
+                
             #-----/ depo flux (J) and thickness (del) calculation -----
 
             #----- calculate deposited Asp mass -----
@@ -702,19 +713,23 @@ class depo(object):
             
             # determine if well still flowing (fluid must be able to overcome pressure drop)
             if P_wh > P_wh_min:
-                t_noFlow = t    # NOTE: t should represent the current time
-                # GOTO EXITLOOP
+                flow_status = 'shutdown; P drop too large'
             else:          
                 # dPf/dt, friction pressure drop wrt time      
                 if dt > 0: 
                     dPf_dt = (dPf0 - dPf) / dt
             
-
-            # update T and P profiles
-            # if T_prof != 'cst':
-            #     T = self.energy_model(T, TLUT)
-            # if P_prof != 'cst':
-            #     P = self.well_model(P, TLUT)
+            # exit loop if no flow, else update T,P profiles
+            if flow_status != 'flowing':
+                t_noFlow = t    # NOTE: t should represent the current time
+                # GOTO EXITLOOP
+            
+            else:
+                # update T and P profiles
+                # if T_prof != 'cst':
+                #     T = self.energy_model(T, TLUT)
+                # if P_prof != 'cst':
+                #     P = self.well_model(P, TLUT)
 
         #--/ time loop
 

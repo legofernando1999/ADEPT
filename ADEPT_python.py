@@ -112,6 +112,7 @@ class depo(object):
         # if user inputs 1 string, then return 1 value. 
         # if user inputs n strings in the tuple, then return a tuple of n values
         
+        
         # get index of property 
         idx = self.prop_label.index(f'{Prop}')
 
@@ -130,14 +131,14 @@ class depo(object):
         
         mFlow = self.sim.mFlow
         A = Pi*R_nZ**2      # m2    
+        volFlow = mFlow * beta / dens # m3/s
         
+        # NOTE: is there a reason you used this method below?
         # volFlow_V = mFlow*beta[0]/dens[0]       # m3/s
         # volFlow_L1 = mFlow*beta[1]/dens[1]      # m3/s
         # volFlow_L2 = mFlow*beta[2]/dens[2]      # m3/s
-        # return (volFlow_V/A, volFlow_L1/A, volFlow_L2/A)    # m/s, velo
-
-        # NOTE: is there a reason you used your method above?
-        volFlow = mFlow * beta / dens # m3/s
+        # return (volFlow_V/A, volFlow_L1/A, volFlow_L2/A)    # m/s, velo        
+        
         return volFlow/A
 
 
@@ -174,7 +175,7 @@ class depo(object):
         Notes:        kP = f(T, SP)
         
         --------- INPUTS -----------------------
-        A:            coefficients of correlation (a1, a2, a3, a4)
+        A:            coefficients of correlation (a0-a3)
         T:            temperature [K]
         del_SP:       diff in solubility parameter between asphaltene and solvent [MPa^0.5]
         eqn:      form of correlation ("nrb" or "T" or "T-SP")

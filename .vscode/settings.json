@@ -4,8 +4,10 @@
         "delf",
         "depo",
         "discretize",
+        "fric",
         "Peclet",
         "redissolution",
+        "velo",
         "volf"
     ]
 }

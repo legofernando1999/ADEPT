@@ -12,7 +12,9 @@ from scipy.interpolate import RegularGridInterpolator
 # FIXME: the whole code!
 
 # define constants
-kB = 1.3806504e-23  # Boltzmann constant 
+Rg = 8.314          # gas constant [J/mol.K]
+kB = 1.3806504e-23  # Boltzmann constant [J/K]
+#Nav = 6.022e23      # Avogadro number [1/mol]
 Pi = np.pi
 
 # <-- REFERENCES -->
@@ -22,7 +24,7 @@ Pi = np.pi
 
 class pipe(object):
     
-    def __init__(self, L: float, R: float, T_ext: float, del_Asp0=None, del_DM0=None) -> None:
+    def __init__(self, L: float, R: float, T_ext: float, del_Asp0: np.array(float)=None, del_DM0: np.array(float)=None) -> None:
         '''
         L: length of pipe (m)
         R: radius of pipe (m)
@@ -33,6 +35,8 @@ class pipe(object):
         NOTE: del_Asp0 and del_DM0 are arrays with discrete values of deposit thickness corresponding to the array of `z`. 
         In case the array of `z` changes from one simulation to the next (which I don't know why it would), 
         we could fit a polynomial to del_Asp0 and then use this to translate del_Asp0 from one discretization scheme to another. 
+        
+        NOTE: added variable types for `del_Asp0` and `del_DM0`. if `del_Asp0` is None, then we will initialize an array of zeros.
         '''
         self.L = L
         self.R = R
@@ -109,12 +113,15 @@ class depo(object):
         '''
         TLUT: Thermodynamic Lookup Table, 4D array (Prop, GOR, P, T)
             Ceq: asphaltene solubility (gAsp[L1]/gAsp[T])
-            wtFrac[V, L1, L2]: phase amounts (wtf)
+            wtFrac[V, L1, L2]: phase frac, mass (g[k]/g)
+            volFrac[V, L1, L2]: phase frac, volume (m3[k]/m3)
             dens[V, L1, L2, Asp]: phase density (kg/m3)
-            volFrac[V, L1, L2]: phase volume (m3[k]/m3)
             visco[V, L1, L2, Asp]: phase viscosity (cP)
             SP[V, L1, L2, Asp]: solubility parameter (MPa^0.5)
             yAsp[V, L1, L2]: asphaltene composition (gAsp[k] / g[k])
+            
+        # NOTE: if it's easy to do, I want to change `TLUT` -> `F-LUT` now for `Fluid LUT` because it's more generic. 
+        # viscosity and velocity, for example, are transport properties, not thermodynamic properties.
         '''
         prop_dict = json.load(file) if type(file) != dict else file
 
@@ -183,6 +190,7 @@ class depo(object):
         return volFlow / A
 
     def _mix_aider(self, Frac_V, Frac_L1):
+        '''for methods `mix_Dens`, `mix_Visco`, `mix_Velo`'''
         f_sum = Frac_V + Frac_L1
         f_V = Frac_V/f_sum
         f_L1 = Frac_L1/f_sum
@@ -237,6 +245,10 @@ class depo(object):
     def pipe_fricFactor(self, Re, d=None):
         '''
         friction factor
+        
+        # TODO: implement the Colebrook-White function that I sent via discord and allow it to be called by this method.
+        # `fric =f(z)` because fluid and pipe properties are not constant across `z` so we either need to solve for `fric` nZ times (or maybe update fric every 10 segments?)
+        # or we use averaged fluid props across the length of the pipe. I recommend averaged fluid props and calculate one `fric` for all z.
         '''
         fric = np.empty_like(Re)
         for i in range(Re.size):
@@ -306,7 +318,7 @@ class depo(object):
             lnkAg = -(A[0]*np.exp(-A[1]/T) + (A[2]*np.exp(-A[3]/T)/dSP2))
         else:   # kAg_model = "default"
             # a[1] represents the collision efficiency
-            RT = 8.314*T
+            RT = Rg*T
             lnkAg = np.log((RT/visco)*A[0]/11250)
 
         return np.exp(lnkAg)*c0
@@ -351,6 +363,7 @@ class depo(object):
 
         # density and viscosity averaging (="none" for L1 only, "mass", or "volume")
         # velocity averaging (="none" for L1 only, or "sum")
+        # TODO: add rho, mu, uz to the `fluid` object
         rho = self.mix_Dens(df, rho_mix)
         mu = self.mix_Visco(df, rho, mu_mix)
         uz = self.mix_Velo(df, u_mix)
@@ -365,7 +378,7 @@ class depo(object):
         Pe = L*uz/Dax                       # Peclet number
 
         # boundary layer calculation
-        fricFactor = self.pipe_fricFactor(Re)      # friction factor
+        fricFactor = self.pipe_fricFactor(Re)      # friction factor # TODO: pass in the `fluid` object -- not only `Re` -- so we can use other fricFactor models
         tau = 0.125*rho*fricFactor*uz**2            # shear stress at wall, Pa
         uf = np.sqrt(tau/rho)                       # friction velocity, m/s
         del_wall = mu/(rho*uf)                      # wall layer thickness, m
@@ -381,6 +394,10 @@ class depo(object):
         #-- precipitation
         kP = self.ADEPT_kP(kP_param, df.T, del_SP, kP_model)
 
+        # NOTE: I recommend making these vars {`del_SP`, `kP_param`, `kP_model`, `kAg_param`, `kAg_model`, etc.} attributes of the `fluid` object.
+        df.del_SP = df.SP_Asp - df.SP[:,1]
+        df.kP = self.ADEPT_kP(df)
+        
         #-- redissolution
         kDiss = self.ADEPT_kDiss()
 
@@ -532,9 +549,11 @@ class depo(object):
         return u
 
     def energy_balance(self, T):
+        '''calculates T=f(z) given updated `del`'''
         pass
 
     def pressure_drop(self, P):
+        '''calculates P=f(z) given updated `del`'''
         pass
 
     def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array, nz, nt, WHP_min=1.):
@@ -686,6 +705,7 @@ class depo(object):
             delf_max = delf_Asp.max()
             
             if delf_max > 0.999:
+                t_noFlow = t
                 flow_status = 'shutdown; cross-section is plugged'
                 
             #-----/ depo flux (J) and thickness (del) calculation -----

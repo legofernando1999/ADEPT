@@ -6,8 +6,8 @@ from scipy.optimize import fsolve
 from scipy.interpolate import RegularGridInterpolator
 
 # TODO: validate against ADEPT-VBA (file: `ADEPT(2023-01-17).xlsm`)
-# TODO: add energy balance model to calculate change in T profile as deposit builds.
-# TODO: add multiphase flow simulator to capture velocity and pressure gradients.
+# TODO: add energy balance model to calculate change in T profile as deposit builds; should consider heat transfer across pipe wall, solid deposit, and fluid.
+# TODO: add multiphase flow simulator to capture velocity and pressure gradients. There are open source packages we should investigate (OpenFOAM, pyFoam, etc.)
 # TODO: fix flash calculation failures in FLUT
 # FIXME: the whole code!
 
@@ -32,11 +32,11 @@ class pipe(object):
         del_Asp0: initial deposit thickness (m), assuming only asphaltenes deposit
         del_DM0: initial deposit thickness (m), assuming aromatics and resins also deposit
         
-        NOTE: del_Asp0 and del_DM0 are arrays with discrete values of deposit thickness corresponding to the array of `z`. 
+        NOTE: 
+        + del_Asp0 and del_DM0 are arrays with discrete values of deposit thickness corresponding to the array of `z`. 
         In case the array of `z` changes from one simulation to the next (which I don't know why it would), 
         we could fit a polynomial to del_Asp0 and then use this to translate del_Asp0 from one discretization scheme to another. 
-        
-        NOTE: added variable types for `del_Asp0` and `del_DM0`. if `del_Asp0` is None, then we will initialize an array of zeros.
+        + added variable types for `del_Asp0` and `del_DM0`. if `del_Asp0` is None, then we will initialize an array of zeros.
         '''
         self.L = L
         self.R = R
@@ -116,7 +116,7 @@ class depo(object):
             wtFrac[V, L1, L2]: phase frac, mass (g[k]/g)
             volFrac[V, L1, L2]: phase frac, volume (m3[k]/m3)
             dens[V, L1, L2, Asp]: phase density (kg/m3)
-            visco[V, L1, L2, Asp]: phase viscosity (cP)
+            visco[V, L1, L2, Asp]: phase viscosity (Pa.s)
             SP[V, L1, L2, Asp]: solubility parameter (MPa^0.5)
             yAsp[V, L1, L2]: asphaltene composition (gAsp[k] / g[k])
         '''
@@ -131,6 +131,7 @@ class depo(object):
 
         return (FLUT, prop_label, prop_unit, GOR_range, P_range, T_range)
 
+    # NOTE: FYI, I think the convention for a function like this is to have it in a `utils.py` file. Don't worry about moving it, just wanted to make you aware.
     def VolCylinder(self, h, Ro, Ri=0):
         '''
         Computes volume of cylinder
@@ -146,7 +147,7 @@ class depo(object):
     def FLUT_interpolator(self, Coord: tuple, Prop: str or tuple) -> np.array:
         '''
         input:
-            Coord: tuple containing GOR, P and T profiles
+            Coord: tuple containing GOR, P and T profiles (NOTE: make a note if GOR, P, T are arrays)
             Prop: string or tuple of strings of the properties that the user wants to interpolate
         output:
             if user inputs 1 string, then one numpy array is returned. 
@@ -174,8 +175,9 @@ class depo(object):
             return np.column_stack(Prop_list)
 
     def FLUT_extractor(self) -> None:
+        ''' add data from the Fluid LUT to the `fluid` object.'''
         Coord = (self.df.GOR, self.df.P, self.df.T)
-                
+        
         self.df.Ceq = self.FLUT_prop(Coord, 'Ceq')
         self.df.yAsp = self.FLUT_prop(Coord, ('yAsp_V', 'yAsp_L1', 'yAsp_L2'))
         self.df.wtFrac = self.FLUT_prop(Coord, ('wtFrac_V', 'wtFrac_L1', 'wtFrac_L2'))
@@ -187,15 +189,14 @@ class depo(object):
         self.df.visco = self.FLUT_prop(Coord, ('visco_V', 'visco_L1', 'visco_L2'))
 
     def Phase_velo(self) -> None:
+        ''' calculate the axial velocity (m/s) of all phases =f(mFlow, A)'''
         a = Pi*self.pipe.Rz**2      # m2
         A = a.reshape(a.size, 1)
         volFlow = self.sim.mFlow*self.df.wtFrac/self.df.dens   # m3/s
         self.df.velo = volFlow / A
 
     def _mix_aider(self, Frac_V, Frac_L1):
-        '''
-        for methods `mix_Dens`, `mix_Visco`, `mix_Velo`
-        '''
+        ''' for methods `mix_Dens`, `mix_Visco`, `mix_Velo` '''
         f_sum = Frac_V + Frac_L1
         f_V = Frac_V/f_sum
         f_L1 = Frac_L1/f_sum
@@ -260,7 +261,7 @@ class depo(object):
         fricfactor0 : float
             Initial guess for friction factor.
         e : float
-            Roughness
+            pipe roughness (must be same unit as radius)
         '''
         Re = self.df.avg_Re
         D = 2*self.pipe.avg_R
@@ -269,7 +270,7 @@ class depo(object):
 
         return fsolve(colebrook, fricfactor0, args=(e))
 
-    def fricfactor(self, correlation='Blasius'):
+    def fricfactor(self, correlation='blasius'):
         '''
         Calculate averaged friction factor along the pipe.
 
@@ -289,7 +290,7 @@ class depo(object):
             self.pipe.fricfactor = 64/self.df.avg_Re            # laminar friction factor
         else:
             # Blasius (turbulent) and Colebrook-White friction factors
-            self.pipe.fricfactor = 0.316/self.df.avg_Re**0.25 if correlation == 'Blasius' else self._colebrook()
+            self.pipe.fricfactor = 0.316/self.df.avg_Re**0.25 if correlation == 'blasius' else self._colebrook()
  
     def ADEPT_kP(self):
         '''
@@ -536,7 +537,7 @@ class depo(object):
         '''calculates P=f(z) given updated `del`'''
         pass
 
-    def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array, nz, nt, WHP_min=1.):
+    def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array, nz: int, nt: int, WHP_min=1.):
         '''
         Solves asphaltene material balance
         
@@ -546,12 +547,18 @@ class depo(object):
             3.- Review ADEPT_Diffusivity function with Paco
             4.- Use Colebrook-White equation to calculate the friction factor
 
-        arguments:
-            T: temperature profile
-            P: pressure profile
-            GOR: Gas to Oil ratio
-            nz: number of z-axis points
-            nt: number of time points
+        PARAMETERS
+        ----------
+            T : np.array(float)
+                temperature profile (K)
+            P : np.array(float)
+                pressure profile (bar)
+            GOR : np.array(float)
+                Gas-Oil Ratio
+            nz : int
+                number of z-axis points
+            nt : int
+                number of time points
         return:
             depo_return object
         '''
@@ -569,7 +576,8 @@ class depo(object):
         dT = 0.
         dPf = 0.
         dPg = 0.
-
+        
+        # pass input thermo properties to `fluid` object
         self.df.GOR = GOR
         self.df.P = P
         self.df.T = T
@@ -580,7 +588,7 @@ class depo(object):
         # z-axis step size (=1/(nz-1))
         dz = z[1] - z[0] 
 
-        # time-step size [sec]
+        # time-step size (s)
         dt = self.sim.t_sim/(nt - 1)
 
         # populate array of depth (m). required for dP model
@@ -613,7 +621,7 @@ class depo(object):
             # extract thermo and transport properties from FLUT at each spatial point
             self.FLUT_extractor()
 
-            # calculate phase velocity at each point from mass flows
+            # phase velocity =f(mFlow, Rz)
             self.Phase_velo()
 
             #zAsp: asphaltene composition (g[Asp]/g[T]) at inlet
@@ -651,20 +659,21 @@ class depo(object):
             # post-processing step after PDEs are solved
             #=========================================================
 
-            # rate of asphaltene deposition [g/cc/s]
+            # rate of asphaltene deposition (kg/m3/s)
             rD = self.df.kD*C*self.df.c0_Asp*(1 - self.df.rSR)
 
-            # deposition flux [kg/m2/s]. might need to revisit to account for V_bl not V_cell.
+            # deposition flux (kg/m2/s). might need to revisit to account for V_bl not V_cell.
             J_Asp = 0.5*rD*self.pipe.Rz
 
             # thickness of asphaltenes and DM deposit (m) (Assumes R >> del which is a good approx for small dt)
+            # TODO: I want to write this calculation such that it applies to R ~ del
             del_Asp_z = dt*J_Asp/self.df.dens_Asp
             del_DM_z = dt*J_Asp/(self.df.dens[:, 2]*self.df.yAsp[:, 2])
 
             del_Asp = np.where(np.abs(J_Asp) > 0., del_Asp + del_Asp_z, del_Asp)
             del_DM = np.where(np.abs(J_Asp) > 0., del_DM + del_DM_z, del_DM)
 
-            # set maximum deposit thickness to R_pipe
+            # set maximum deposit thickness (del) to pipe radius (R)
             del_Asp = np.where(del_Asp >= R, R, del_Asp)
             del_DM = np.where(del_DM >= R, R, del_DM)
 
@@ -679,7 +688,7 @@ class depo(object):
                 
             #-----/ depo flux (J) and thickness (del) calculation -----
 
-            #----- calculate deposited Asp mass -----
+            #----- deposited Asp mass -----
             # element length (m)
             dL_m = L*dz
                 
@@ -689,7 +698,7 @@ class depo(object):
             # mass deposit (kg)
             mass_Asp = V_cyl*self.df.dens_Asp
 
-            #----- calculate pressure drop (dP) if at (or near) t_out -----
+            #----- pressure drop (dP) -----
             # store dT, dP results from prev iteration
             # dT0 = dT
             dPf0, dPg0 = dPf, dPg
@@ -698,6 +707,7 @@ class depo(object):
             # dT = self.energy_balance(depofluid)
             
             # dP @ t; dP=(dPf=friction loss, dPg=gravity loss)
+            # TODO: change the inputs to this function to take the effective radius (Rz_DM) instead of `R` and `del_dm`
             dPf, dPg = self.pressure_drop(self.sim.mFlow, L, R, del_DM, df)
             
             # WHP, update wellhead pressure

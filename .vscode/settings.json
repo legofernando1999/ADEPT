@@ -5,12 +5,16 @@
         "delf",
         "depo",
         "discretize",
+        "Diss",
         "FLUT",
         "fric",
         "KLUT",
+        "Naseri",
         "Peclet",
+        "Rajan",
         "redissolution",
         "velo",
-        "volf"
+        "volf",
+        "Weisbach"
     ]
 }

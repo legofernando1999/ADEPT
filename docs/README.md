@@ -2,6 +2,7 @@
 
 + [NRB_2018][NRB_2018]: Rajan Babu (2018) "Modeling Methods for Prediction of Asphaltene Deposition."
   + section from Vargas and Tavakkoli book summarizing asphaltene deposition modeling approaches
+  + doi: http://www.sciencedirect.com/science/article/pii/S0920410520306240
 + [NRB_2019a][NRB_2019a]: Rajan Babu (2019) "Mechanistic Investigation and Modeling of Asphaltene Deposition."
   + some CFD modeling
   + some discussion of ADEPT parameter scaling from lab to wellbore

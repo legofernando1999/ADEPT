@@ -30,14 +30,81 @@ Examples:
 # import packages
 import json
 import numpy as np
+from pathlib import Path
 
 # TODO: write the functions below that represent the API that the user will interact with.
 # we should be able to use common names and then polymorphism will work to find the correct entry-point to the `ADEPT_python.py` file
 
-def ADEPT_Run(mFlow, T_tuple, P_tuple, GOR_tuple, FLUT: np.array):
-    pass
+def ADEPT_Run1(t: float, mFlow: float, L: float, R: float, T_tuple: tuple or np.ndarray, P_tuple: tuple or np.ndarray, GOR: float, 
+               FLUT: dict or json or Path or np.ndarray, KLUT: dict or json or Path):
+    '''
+    
+    Parameters
+    ----------
+    t : float
+        time (s)
+    mFlow : float
+        mass flow rate (kg/s)
+    L : float
+        pipe length (m)
+    R : float
+        pipe radius (m)
+    T_tuple : tuple[float]
+        (BHT, WHT) .= must be same unit as LUT
+    P_tuple : tuple[float]
+        (BHP, WHP) .= must be same unit as LUT
+    GOR : float
+        gas-oil ratio .= must be same unit as LUT
+    FLUT : dict or json or Path or np.ndarray
+        fluid lookup table
+    KLUT : dict or json or Path
+        kinetics lookup table
+    
+    Return
+    ------
+    depo_return : dict
+
+    '''
+    
+    # read `fluid` LUT
+    FLUT_np = read_FLUT(FLUT)
+
+    # read `kinetics` LUT
+    KLUT_dict = read_KLUT(KLUT)
+
+    #return = ADEPT_Solver(T, P, GOR) 
+    return t, mFlow
 
 def ADEPT_Run(json_ADEPT: json):
     pass
 
 # TODO: `sim`, `pipe`, and `fluid` class initialization should probably happen in the API or a separate file called by the API.
+
+
+# reader functions
+def read_FLUT(LUT):
+    '''convert input -> dict: `Fluid` LUT'''  
+
+    if isinstance(LUT, np.ndarray):
+        return LUT
+    return np.array(list(get_dict_from_input(LUT).values()), dtype=dict)
+        
+def read_KLUT(LUT):
+    '''convert input -> dict: `Kinetics` LUT'''
+    return get_dict_from_input(LUT)
+
+def get_dict_from_input(LUT):
+    '''convert input (dict, json, Path, str) -> dict'''
+    if isinstance(LUT, dict):
+        return LUT
+    elif isinstance(LUT, json):
+        with open(LUT, 'r') as json_file:
+            return json.load(json_file)
+    elif isinstance(LUT, str):
+        if not Path(LUT).is_file():
+            return json.loads(LUT)
+        with open(LUT, 'r') as json_file:
+            json_string = json_file.read()
+            return json.loads(json_string)
+
+# 

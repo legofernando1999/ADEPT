@@ -1,0 +1,17 @@
+{
+    "kP_param": [
+        0.360827,
+        41.12422
+    ],
+    "kP_model": "t-sp",
+    "kAg_param": 0.001871,
+    "kAg_model": "default",
+    "kD_param": 0.03,
+    "kD_scale": "wb",
+    "SR_param": [
+        5,
+        0.6,
+        0.16
+    ],
+    "SR_model": "default"
+}

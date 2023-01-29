@@ -278,7 +278,7 @@ class depo(object):
         Calculate averaged friction factor along the pipe.
 
         Parameters
-        ----------.
+        ----------
         correlation : str, optional
             Optional input specifying the friction factor correlation.
 

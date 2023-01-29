@@ -1,0 +1,17 @@
+{
+    "t": 8640000,
+    "mFlow": 10.25838,
+    "L": 5438.586,
+    "R": 0.059309,
+    "T_prof": [
+        357.0388889,
+        323.15
+    ],
+    "P_prof": [
+        704.692178,
+        260.4629664
+    ],
+    "GOR": 584.5186,
+    "FLUT": "data/Fluid-LUT/S14-SAFT-MILA2020.json",
+    "KLUT": "data/Kinetics-LUT/ME15-PR76-MILA2020.json"
+}

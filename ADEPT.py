@@ -66,34 +66,42 @@ def ADEPT_Run1(t: float, mFlow: float, L: float, R: float, T_tuple: tuple or np.
 
     '''
     
-    # read `fluid` LUT
-    FLUT_np = read_FLUT(FLUT)
-
-    # read `kinetics` LUT
-    KLUT_dict = read_KLUT(KLUT)
+    # prepare vars for `ADEPT_Solver`
+    T = read_TP(T_tuple)        # T (K)
+    P = read_TP(P_tuple)        # P (bar)
+    FLUT_np = read_FLUT(FLUT)   # get dict: `fluid` LUT
+    KLUT_dict = read_KLUT(KLUT) # get dict: `kinetics` LUT
 
     #return = ADEPT_Solver(T, P, GOR) 
     return t, mFlow
 
-def ADEPT_Run(json_ADEPT: json):
-    pass
+def ADEPT_Run(input_file: dict or json or Path):
+    dict_ = get_dict_from_input(input_file)
 
-# TODO: `sim`, `pipe`, and `fluid` class initialization should probably happen in the API or a separate file called by the API.
+# TODO: `sim`, `pipe`, and `fluid` class initialization should probably happen in the API or a helper file called by the API.
 
 
 # reader functions
-def read_FLUT(LUT):
-    '''convert input -> dict: `Fluid` LUT'''  
-
-    if isinstance(LUT, np.ndarray):
-        return LUT
-    return np.array(list(get_dict_from_input(LUT).values()), dtype=dict)
+def read_TP(x)->np.ndarray:
+    '''convert input -> np.ndarray'''
+    if isinstance(x, (tuple, list)):
+        return np.array(x, dtype=np.float64)
+    elif isinstance(x, np.ndarray):
+        return x
+    
+def read_FLUT(LUT)->dict:
+    '''convert input -> dict: `Fluid` LUT'''
+    return get_dict_from_input(LUT)
+    # if isinstance(LUT, np.ndarray):
+    #     return LUT
+    # dict_ = get_dict_from_input(LUT)
+    # return np.array(list(dict_.values()), dtype=dict)
         
-def read_KLUT(LUT):
+def read_KLUT(LUT)->dict:
     '''convert input -> dict: `Kinetics` LUT'''
     return get_dict_from_input(LUT)
 
-def get_dict_from_input(LUT):
+def get_dict_from_input(LUT: dict or json or Path or str)->dict:
     '''convert input (dict, json, Path, str) -> dict'''
     if isinstance(LUT, dict):
         return LUT
@@ -106,5 +114,3 @@ def get_dict_from_input(LUT):
         with open(LUT, 'r') as json_file:
             json_string = json_file.read()
             return json.loads(json_string)
-
-# 

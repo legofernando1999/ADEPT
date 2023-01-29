@@ -546,7 +546,6 @@ class depo(object):
     def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array, nz: int, nt: int, WHP_min=1.):
         '''
         Solves asphaltene deposition problem =f(t,z) using the ADEPT formulation
-        material balance
 
         Parameters
         ----------
@@ -566,10 +565,14 @@ class depo(object):
             
         Notes
         -----
-            + Should we choose the time step according to the characteristic time of formation of deposit?
             + Currently using a Crank-Nicolson scheme to solve PDEs
             + deposition model
-                + ADEPT formulation: primary particle material balance [1-3]
+                + ADEPT formulation: primary particle (PP) material balance [1-3]
+                + eqn: dC/dt = 
+                    + advection (transport of PP)
+                    + precipitation (source of PP)
+                    + aggregation (sink of PP)
+                    + deposition (sink of PP)        
             + dT model (enthalpy change):
                 + model description
                 + relevant assumptions
@@ -607,13 +610,14 @@ class depo(object):
         self.fl.T = T
             
         # discretize pipe into nz points
-        # TODO: (for later) may want to change discretization scheme to update as pipe domain changes
+        # TODO: (next version) may want to change discretization scheme to update as pipe domain changes
         z = np.linspace(0, 1, nz)
 
         # z-axis step size (=1/(nz-1))
         dz = z[1] - z[0] 
 
         # time-step size (s)
+        # TODO: (next version) `dt` should be calculated from the characteristic time of deposit formation
         dt = self.sim.t_sim/(nt - 1)
 
         # populate array of depth (m). required for dP model

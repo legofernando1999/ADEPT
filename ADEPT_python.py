@@ -1,7 +1,6 @@
 # import packages
 import numpy as np
 import json
-from scipy.integrate import odeint
 from scipy.optimize import fsolve
 from scipy.interpolate import RegularGridInterpolator
 
@@ -145,7 +144,7 @@ class depo(object):
     def FLUT_interpolator(self, Coord: tuple, Prop: str or tuple) -> np.array:
         '''
         input:
-            Coord: tuple containing GOR, P and T profiles (NOTE: make a note if GOR, P, T are arrays)
+            Coord: tuple containing GOR, P and T profiles (GOR, P, T are ndarrays)
             Prop: string or tuple of strings of the properties that the user wants to interpolate
         output:
             if user inputs 1 string, then one numpy array is returned. 
@@ -205,6 +204,7 @@ class depo(object):
         calculate averaged total density by method: "rho_mix"
         '''      
         rho_mix = self.mix_phase[0]
+        dens = self.df.dens
         if rho_mix == "mass":
             # mass-averaged dens
             wtf = self._mix_aider(self.fl.wtFrac[:, 0], self.fl.wtFrac[:, 1])        # mass fraction
@@ -222,6 +222,8 @@ class depo(object):
         calculate averaged total viscosity by method: "mu_mix"
         '''
         mu_mix = self.mix_phase[1]
+        wtFrac = self.df.wtFrac
+        visco = self.df.visco
         if mu_mix == 'mass':
             # mass-averaged visco
             wtf = self._mix_aider(self.fl.wtFrac[:, 0], self.fl.wtFrac[:, 1])        # mass fraction
@@ -365,11 +367,18 @@ class depo(object):
         Da_Ag: aggregation
         Da_D:  deposition
         '''
+        Rz = self.pipe.Rz
+        L = self.pipe.L
+
         # density and viscosity averaging (="none" for L1 only, "mass", or "volume")
         # velocity averaging (="none" for L1 only, or "sum")
         self.mix_Dens()
         self.mix_Visco()
         self.mix_Velo()
+
+        rho = self.df.rho
+        mu = self.df.mu
+        uz = self.df.uz
 
         # residence time (s)
         self.fl.t_res = self.pipe.L/self.fl.uz
@@ -415,53 +424,38 @@ class depo(object):
         self.fl.Da_Ag = self.fl.kAg*self.fl.t_res
         self.fl.Da_D = self.fl.kD*(1 - self.fl.rSR)*self.fl.t_res
 
-    def ADEPT_Solver_Cf(self, u0, m, k, h, V, F, BC, isTransient: bool=True):
+    def ADEPT_Solver_Cf(self, u0, nz, dt, dz, BC, isTransient):
         '''
         Solves PDE for dissolved asphaltene concentration (gAsp_L1 / gAsp_Ovr)
-        dCf/dt = -dCf/dz - Da_p*(Cf-Ceq)
+        dCf/dt + v_z*dCf/dz + kP*Cf = kP*Ceq
         IC: Cf(z, t=0) = 1    (all Asp dissolved at t=0)
         BC: Cf(z=0, t) = 1    (all Asp dissolved at z=0)
 
         input
             u0: Cf at j-th step in t
-            m: number of z-axis steps
-            k: time step size (=T/N)
-            h: z-axis step size (=L/m)
-            V: Da_p at j-th step in t
-            F: Ceq at j-th step in t
+            nz: number of z-axis steps
+            dt: time step size (=T/N)
+            dz: z-axis step size (=L/m)
             BC: boundary condition at inlet (z=0)
             isTransient: transient or steady-state (dCf/dt = 0)
         output
             u: Cf at (j+1)st step in t
         '''
         if isTransient:
-            alpha = 0.25*k/h
+            alpha = 0.25*dt*self.df.uz[1:]/dz
+            beta = 0.5*dt*self.df.kP[1:]
+            g = dt*self.df.kP[1:]*self.df.Ceq[1:]
 
-            # A = np.zeros((m - 1, m - 1))
-            # B = np.zeros_like(A)
+            A = np.diag(1 + beta) + np.diag(alpha*np.ones(nz-2), k=1) + np.diag(-alpha*np.ones(nz-2), k=-1)
+            B = np.diag(1 - beta) + np.diag(-alpha*np.ones(nz-2), k=1) + np.diag(alpha*np.ones(nz-2), k=-1)
 
-            # np.fill_diagonal(A, 1 + 0.5*k*v[1:])
-            # np.fill_diagonal(B, 1 - 0.5*k*v[1:])
-
-            # for i in range(m - 2):
-            #     A[i, i+1] = alpha
-            #     A[i+1, i] = -alpha
-            #     B[i, i+1] = -alpha
-            #     B[i+1, i] = alpha
-
-            A = np.diag(1 + 0.5*k*v[1:]) + np.diag(alpha*np.ones(m-2), k=1) + np.diag(-alpha*np.ones(m-2), k=-1)
-            B = np.diag(1 - 0.5*k*v[1:]) + np.diag(-alpha*np.ones(m-2), k=1) + np.diag(alpha*np.ones(m-2), k=-1)
-
-            v = V[1:]
-            f = v*F[1:]
             w0 = u0[1:]
-
-            C = np.matmul(B, w0) + k*f
+            C = np.matmul(B, w0) + g
 
             # Solves linear system Aw = C
             w = np.linalg.solve(A, C)
 
-            u = np.empty(m)
+            u = np.empty(nz)
             u[0] = BC
             u[1:] = w
 
@@ -470,7 +464,7 @@ class depo(object):
 
         return u
 
-    def ADEPT_Solver_C(self, u0, m, k, h, A1, A2, A3, A4, A5, V0, V, F, BC, isTransient: bool=True):
+    def ADEPT_Solver_C(self, u0, m, k, h, A1, A2, A3, A4, A5, V0, V, F, BC, isTransient):
         '''
         Solves PDE for primary particle concentration:
         dC/dt = 1/Pe*d2C/dz2 - dC/dz + rp - Da_ag*C^2 - Da_d*C
@@ -543,7 +537,7 @@ class depo(object):
         '''calculates P=f(z) given updated `del`'''
         pass
 
-    def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array, nz: int, nt: int, WHP_min=1.):
+    def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array):
         '''
         Solves asphaltene deposition problem =f(t,z) using the ADEPT formulation
 
@@ -592,6 +586,7 @@ class depo(object):
         '''
         R = self.pipe.R
         L = self.pipe.L
+        t_sim = self.sim.t_sim
         isTransient = self.sim.isTransient
 
         self.pipe.V = self.VolCylinder(L, R)    # total tubing volume
@@ -605,12 +600,11 @@ class depo(object):
         dPf, dPg = 0.
         
         # pass input thermo properties to `fluid` object
-        self.fl.GOR = GOR
-        self.fl.P = P
-        self.fl.T = T
+        self.df.GOR = GOR
+        self.df.P = P
+        self.df.T = T
             
         # discretize pipe into nz points
-        # TODO: (next version) may want to change discretization scheme to update as pipe domain changes
         z = np.linspace(0, 1, nz)
 
         # z-axis step size (=1/(nz-1))
@@ -638,7 +632,7 @@ class depo(object):
         #--- time-march loop ---
         flow_status = 'flowing'     # will exit time-march loop when flow_status != 'flowing'
         t = 0.
-        while t < self.sim.t_sim and flow_status == 'flowing':
+        while t < t_sim and flow_status == 'flowing':
             t += dt
             
             # update radius profile due to restriction (R_eff: effective radius)
@@ -668,7 +662,7 @@ class depo(object):
 
             #----- solve governing PDEs ----------------------------------------------         
             # solve for conc dissolved asphaltenes: Cf(t,z)
-            Cf = self.ADEPT_Solver_Cf(Cf0, nz, dt, dz, self.fl, Cf_in, isTransient)
+            Cf = self.ADEPT_Solver_Cf(Cf0, nz, dt, dz, self.df, Cf_in, isTransient)
 
             # solve for conc primary particles: C(t,z)
             C = self.ADEPT_Solver_C(C0, nz, dt, dz, self.fl, Cf0, Cf, C_in, isTransient)

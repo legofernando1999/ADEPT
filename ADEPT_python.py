@@ -118,9 +118,10 @@ class depo(object):
         FLUT = prop_dict['prop_table']
         prop_label = prop_dict['prop_label']
         prop_unit = prop_dict['prop_unit']
-        GOR_range = np.array(prop_dict['GOR'])
-        P_range = np.array(prop_dict['P'])
-        T_range = np.array(prop_dict['T'])
+        coord_label = prop_dict['coord_label']
+        GOR_range = np.array(prop_dict[coord_label[0]])
+        P_range = np.array(prop_dict[coord_label[1]])
+        T_range = np.array(prop_dict[coord_label[2]])
 
         return (FLUT, prop_label, prop_unit, GOR_range, P_range, T_range)
 
@@ -171,21 +172,22 @@ class depo(object):
         ''' add data from the Fluid LUT to the `fluid` object.'''
         Coord = (self.fl.GOR, self.fl.P, self.fl.T)
         
-        self.fl.Ceq = self.FLUT_prop(Coord, 'Ceq')
-        self.fl.yAsp = self.FLUT_prop(Coord, ('yAsp_V', 'yAsp_L1', 'yAsp_L2'))
-        self.fl.wtFrac = self.FLUT_prop(Coord, ('wtFrac_V', 'wtFrac_L1', 'wtFrac_L2'))
-        self.fl.volFrac = self.FLUT_prop(Coord, ('volFrac_V', 'volFrac_L1', 'volFrac_L2'))
-        self.fl.dens = self.FLUT_prop(Coord, ('dens_V', 'dens_L1', 'dens_L2'))
-        self.fl.dens_Asp = self.FLUT_prop(Coord, 'dens_Asp')
-        self.fl.SP = self.FLUT_prop(Coord, ('SP_V', 'SP_L1', 'SP_L2'))
-        self.fl.SP_Asp = self.FLUT_prop(Coord, 'SP_Asp')
-        self.fl.visco = self.FLUT_prop(Coord, ('visco_V', 'visco_L1', 'visco_L2'))
+        self.fl.Ceq = self.FLUT_interpolator(Coord, 'Ceq')
+        self.fl.yAsp = self.FLUT_interpolator(Coord, ('yAsp_V', 'yAsp_L1', 'yAsp_L2'))
+        self.fl.wtFrac = self.FLUT_interpolator(Coord, ('wtFrac_V', 'wtFrac_L1', 'wtFrac_L2'))
+        self.fl.volFrac = self.FLUT_interpolator(Coord, ('volFrac_V', 'volFrac_L1', 'volFrac_L2'))
+        self.fl.dens = self.FLUT_interpolator(Coord, ('dens_V', 'dens_L1', 'dens_L2'))
+        self.fl.dens_Asp = self.FLUT_interpolator(Coord, 'dens_Asp')
+        self.fl.SP = self.FLUT_interpolator(Coord, ('SP_V', 'SP_L1', 'SP_L2'))
+        self.fl.SP_Asp = self.FLUT_interpolator(Coord, 'SP_Asp')
+        self.fl.visco = self.FLUT_interpolator(Coord, ('visco_V', 'visco_L1', 'visco_L2'))
 
     def Phase_velo(self) -> None:
         ''' calculate the axial velocity (m/s) of all phases =f(mFlow, A)'''
         a = Pi*self.pipe.R_eff**2      # m2
         A = a.reshape(a.size, 1)
         volFlow = self.sim.mFlow*self.fl.wtFrac/self.fl.dens   # m3/s
+        np.nan_to_num(volFlow, copy=False)
         self.fl.velo = volFlow / A
 
     def _mix_aider(self, Frac_V, Frac_L1):
@@ -331,7 +333,7 @@ class depo(object):
         else:   # kAg_model = "default"
             # a[1] represents the collision efficiency
             RT = Rg*T
-            lnkAg = np.log((RT/self.fl.visco)*A[0]/11250)
+            lnkAg = np.log((RT/self.fl.mu)*A/11250)
 
         self.fl.kAg = np.exp(lnkAg)*self.fl.c0_Asp
 
@@ -344,7 +346,7 @@ class depo(object):
         ScF = (2*delta/self.pipe.R)*(phi/(phi + 1))
         self.fl.kD = ScF*kD_us
 
-    def ADEPT_rSR(self, A, tau):
+    def ADEPT_rSR(self, tau):
         '''
         Shear removal rate.
         '''
@@ -363,7 +365,7 @@ class depo(object):
         Da_Ag: aggregation
         Da_D:  deposition
         '''
-        Rz = self.pipe.Rz
+        R_eff = self.pipe.R_eff
         L = self.pipe.L
 
         # density and viscosity averaging (="none" for L1 only, "mass", or "volume")
@@ -445,8 +447,8 @@ class depo(object):
             beta = 0.5*dt*self.fl.kP[1:]
             g = dt*self.fl.kP[1:]*self.fl.Ceq[1:]
 
-            A = np.diag(1 + beta) + np.diag(alpha[2:nz-1], k=1) + np.diag(-alpha[1:nz-2], k=-1)
-            B = np.diag(1 - beta) + np.diag(-alpha[2:nz-1], k=1) + np.diag(alpha[1:nz-2], k=-1)
+            A = np.diag(1 + beta) + np.diag(alpha[2:nz], k=1) + np.diag(-alpha[1:nz-1], k=-1)
+            B = np.diag(1 - beta) + np.diag(-alpha[2:nz], k=1) + np.diag(alpha[1:nz-1], k=-1)
 
             w0 = u0[1:]
             C = np.matmul(B, w0) + g
@@ -597,10 +599,10 @@ class depo(object):
         # dT = 0.
         # dPf, dPg = 0.
 
-        nz = 200.
+        nz = 200
         # nt = 100.
         
-        z = np.linspace(0, L, nz)
+        z = np.linspace(0., L, nz)
         xp = [0, L]
         T = np.interp(z, xp, fp=T_prof)
         P = np.interp(z, xp, fp=P_prof)

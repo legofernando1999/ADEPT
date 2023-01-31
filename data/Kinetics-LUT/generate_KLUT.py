@@ -12,14 +12,15 @@ kP_param = (0.360827, 41.12422)
 kP_model = 't-sp'
 kAg_param = (0.001871)
 kAg_model = 'default'
-kD_param = (0.03)
+kD_param = 4*[]
+kD = 0.3
 kD_scale = 'wb'
 SR_param = (5, 0.6, 0.16)
 SR_model = 'default'
 
 # create dict
 data = {'kP_param': kP_param, 'kP_model': kP_model, 'kAg_param': kAg_param, 'kAg_model': kAg_model,
-          'kD_param': kD_param, 'kD_scale': kD_scale, 'SR_param': SR_param, 'SR_model': SR_model}
+          'kD_param': kD_param, 'kD': kD, 'kD_scale': kD_scale, 'SR_param': SR_param, 'SR_model': SR_model}
 
 # save to json
 path = Path(__file__).parent.resolve()

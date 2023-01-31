@@ -5,6 +5,7 @@ import numpy as np
 import json
 import pandas as pd
 import itertools
+from pathlib import Path
 
 def xlsx_to_json(uploaded_file: str) -> tuple:
     """
@@ -88,3 +89,26 @@ def xlsx_to_json(uploaded_file: str) -> tuple:
 
     # create json object from dict
     return fluid, json.dumps(prop_dict)
+
+def json_to_stdUnits(LUT: dict or json or Path or str) -> dict:
+    return get_dict_from_input(LUT)
+
+def get_dict_from_input(LUT: dict or json or Path or str)->dict:
+    '''convert input (dict, json, Path, str) -> dict'''
+    if isinstance(LUT, dict):
+        return LUT        
+    elif isinstance(LUT, str):
+        if not Path(LUT).is_file():
+            return json.loads(LUT)
+        with open(LUT, 'r') as json_file:
+            json_string = json_file.read()
+            return json.loads(json_string)
+    else:
+        with open(LUT, 'r') as json_file:
+            return json.load(json_file)
+        
+# TEST
+file_name = r'C:\Users\cjsis\Documents\Github\ENNOVA\ADEPT\data\Fluid-LUT\PC003-PR78.json'
+data = json_to_stdUnits(file_name)
+
+print(type(data))

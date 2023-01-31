@@ -15,7 +15,7 @@ R = 0.059309 #m
 T_prof = (357.0388889, 323.15)  #K
 P_prof = (704.692178, 260.4629664)  #bar
 GOR = 584.5186  #scf/stb
-json_FLUT = 'data/Fluid-LUT/S14-SAFT-MILA2020.json'
+json_FLUT = DATA_DIR / 'Fluid-LUT' / 'S14-SAFT-MILA2020.json' #'data/Fluid-LUT/S14-SAFT-MILA2020.json'
 json_KLUT = 'data/Kinetics-LUT/ME15-PR76-MILA2020.json'
 
 # read json files

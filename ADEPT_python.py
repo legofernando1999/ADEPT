@@ -2,7 +2,7 @@
 import numpy as np
 import json
 from scipy.optimize import fsolve
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator, interp1d
 
 # TODO: add a module level docstring (https://numpydoc.readthedocs.io/en/latest/format.html#documenting-modules) to this file
 # FIXME: the whole code!
@@ -20,7 +20,7 @@ Pi = np.pi
 
 class pipe(object):
     
-    def __init__(self, L: float, R: float, T_ext: float, del_Asp0: np.array(float)=None, del_DM0: np.array(float)=None) -> None:
+    def __init__(self, L: float, R: float, T_ext: float=0, del_Asp: np.ndarray=None, del_DM: np.ndarray=None) -> None:
         '''
         L: length of pipe (m)
         R: radius of pipe (m)
@@ -37,9 +37,8 @@ class pipe(object):
         self.L = L
         self.R = R
         self.T_ext = T_ext
-        # TODO: we may want to change the name of the attribute to `del_Asp` and `del_DM` as these will change as the simulation progresses.
-        self.del_Asp0 = del_Asp0
-        self.del_DM0 = del_DM0
+        self.del_Asp = del_Asp
+        self.del_DM = del_DM
 
 
 class sim(object):
@@ -89,14 +88,11 @@ class depo(object):
         fl = fluid()
 
         # asphaltene rate parameters
-        fl.kP = KLUT["kP"]
-        fl.kAg = KLUT["kAg"]
         fl.kD = KLUT["kD"]
         fl.kP_param = KLUT["kP_param"]
         fl.kP_model = KLUT["kP_model"]
         fl.kAg_param = KLUT["kAg_param"]
         fl.kAg_model = KLUT["kAg_model"]
-        fl.kD_param = KLUT["kD_param"]
         fl.kD_scale = KLUT["kD_scale"]
         fl.SR_param = KLUT["SR_param"]
         fl.SR_model = KLUT["SR_model"]
@@ -204,37 +200,37 @@ class depo(object):
         calculate averaged total density by method: "rho_mix"
         '''      
         rho_mix = self.mix_phase[0]
-        dens = self.df.dens
+        dens = self.fl.dens
         if rho_mix == "mass":
             # mass-averaged dens
             wtf = self._mix_aider(self.fl.wtFrac[:, 0], self.fl.wtFrac[:, 1])        # mass fraction
-            self.fl.rho = 1 / np.sum(wtf/self.fl.dens[:, :2], axis=1)
+            self.fl.rho = 1 / np.sum(wtf/dens[:, :2], axis=1)
         elif rho_mix == "volume":
             # vol-averaged dens
             volf = self._mix_aider(self.fl.volFrac[:, 0], self.fl.volFrac[:, 1])     # volume fraction
-            self.fl.rho = np.sum(self.fl.dens[:, :2]*volf, axis=1)
+            self.fl.rho = np.sum(dens[:, :2]*volf, axis=1)
         else:
             # none (total dens = L1 dens)
-            self.fl.rho = self.fl.dens[:, 1]  
+            self.fl.rho = dens[:, 1]  
 
     def mix_Visco(self) -> None:
         '''
         calculate averaged total viscosity by method: "mu_mix"
         '''
         mu_mix = self.mix_phase[1]
-        wtFrac = self.df.wtFrac
-        visco = self.df.visco
+        wtFrac = self.fl.wtFrac
+        visco = self.fl.visco
         if mu_mix == 'mass':
             # mass-averaged visco
-            wtf = self._mix_aider(self.fl.wtFrac[:, 0], self.fl.wtFrac[:, 1])        # mass fraction
-            self.fl.mu = np.sum(wtf/self.fl.visco[:, :2], axis=1)
+            wtf = self._mix_aider(wtFrac[:, 0], wtFrac[:, 1])        # mass fraction
+            self.fl.mu = np.sum(wtf/visco[:, :2], axis=1)
         elif mu_mix == 'volume':
             # volume-averaged visco
-            wtf = self._mix_aider(self.fl.wtFrac[:, 0], self.fl.wtFrac[:, 1])        # mass fraction
-            self.fl.mu = self.fl.rho*np.sum(wtf*self.fl.visco[:, :2]/self.fl.dens[:, :2], axis=1)
+            wtf = self._mix_aider(wtFrac[:, 0], wtFrac[:, 1])        # mass fraction
+            self.fl.mu = self.fl.rho*np.sum(wtf*visco[:, :2]/self.fl.dens[:, :2], axis=1)
         else:
             # none (total visco = L1 visco)
-            self.fl.mu = self.fl.visco[:, 1]
+            self.fl.mu = visco[:, 1]
 
     def mix_Velo(self) -> None:
         '''
@@ -376,19 +372,19 @@ class depo(object):
         self.mix_Visco()
         self.mix_Velo()
 
-        rho = self.df.rho
-        mu = self.df.mu
-        uz = self.df.uz
+        rho = self.fl.rho
+        mu = self.fl.mu
+        uz = self.fl.uz
 
         # residence time (s)
-        self.fl.t_res = self.pipe.L/self.fl.uz
+        self.fl.t_res = L/uz
 
         # axial dispersion, Peclet number
         Dm = self.ADEPT_Diffusivity()
-        self.fl.Re = 2*self.pipe.R_eff*self.fl.uz*self.fl.rho/self.fl.mu       # Reynolds number
+        self.fl.Re = 2*self.pipe.R_eff*uz*rho/mu       # Reynolds number
         self.fl.avg_Re = np.average(self.fl.Re)                             # averaged Reynolds over the length of the pipe
-        Dax = np.where(self.fl.Re < 2500, Dm + (self.pipe.R_eff*self.fl.uz)**2/(48*Dm), 0.4*self.pipe.R_eff*self.fl.uz)
-        self.fl.Pe = self.pipe.L*self.fl.uz/Dax                             # Peclet number
+        self.fl.Dax = np.where(self.fl.Re < 2500, Dm + (self.pipe.R_eff*uz)**2/(48*Dm), 0.4*self.pipe.R_eff*uz)
+        # self.fl.Pe = self.pipe.L*self.fl.uz/self.fl.Dax                      # Peclet number
 
         # boundary layer calculation
         self.fricFactor()   # friction factor
@@ -419,10 +415,13 @@ class depo(object):
         #-- shear removal rate, rSR
         self.ADEPT_rSR(tau)
 
+        # update kD to consider "shear removal"
+        self.fl.kD = self.fl.kD*(1 - self.fl.rSR)
+
         # Damkohler numbers
-        self.fl.Da_P = self.fl.kP*self.fl.t_res
-        self.fl.Da_Ag = self.fl.kAg*self.fl.t_res
-        self.fl.Da_D = self.fl.kD*(1 - self.fl.rSR)*self.fl.t_res
+        # self.fl.Da_P = self.fl.kP*self.fl.t_res
+        # self.fl.Da_Ag = self.fl.kAg*self.fl.t_res
+        # self.fl.Da_D = self.fl.kD*self.fl.t_res
 
     def ADEPT_Solver_Cf(self, u0, nz, dt, dz, BC, isTransient):
         '''
@@ -442,9 +441,9 @@ class depo(object):
             u: Cf at (j+1)st step in t
         '''
         if isTransient:
-            alpha = 0.25*dt*self.df.uz[1:]/dz
-            beta = 0.5*dt*self.df.kP[1:]
-            g = dt*self.df.kP[1:]*self.df.Ceq[1:]
+            alpha = 0.25*dt*self.fl.uz[1:]/dz
+            beta = 0.5*dt*self.fl.kP[1:]
+            g = dt*self.fl.kP[1:]*self.fl.Ceq[1:]
 
             A = np.diag(1 + beta) + np.diag(alpha*np.ones(nz-2), k=1) + np.diag(-alpha*np.ones(nz-2), k=-1)
             B = np.diag(1 - beta) + np.diag(-alpha*np.ones(nz-2), k=1) + np.diag(alpha*np.ones(nz-2), k=-1)
@@ -464,7 +463,7 @@ class depo(object):
 
         return u
 
-    def ADEPT_Solver_C(self, u0, m, k, h, A1, A2, A3, A4, A5, V0, V, F, BC, isTransient):
+    def ADEPT_Solver_C(self, u0, v0, nz, dt, dz, isTransient):
         '''
         Solves PDE for primary particle concentration:
         dC/dt = 1/Pe*d2C/dz2 - dC/dz + rp - Da_ag*C^2 - Da_d*C
@@ -492,39 +491,19 @@ class depo(object):
         output
             u: C at (j+1)st step in t
         '''
-        if isTransient:
-            alpha = 0.5*k/h**2
-            beta = 0.25*k/h
+        if isTransient: 
+            u = np.zeros(nz)
+            a1 = self.fl.Dax*dt/dz**2
+            a2 = 0.5*self.fl.uz*dt/dz
+            a3 = dt*self.fl.kP
+            a4 = dt*self.fl.kAg
+            a5 = dt*self.fl.kD
+            for i in range(1, nz-1):
+                r = v0[i] - self.fl.Ceq[i] if v0[i] - self.fl.Ceq[i] >= 0 else -self.fl.kDiss*u0[i]
+                u[i] = (1 - 2*a1 - a5)*u0[i] + (a1 - a2)*u0[i+1] + (a1 + a2)*u0[i-1] + a3*r - a4*u0[i]**2
 
-            a1 = 1/A1[1:]
-            a2 = A2[1:]
-            a3 = A3[1:]
-            a4 = A4[1:]
-            a5 = A5[1:]
-            w0 = u0[1:]
-
-            v0 = V0[1:]
-            v = V[1:]
-            f = F[1:]
-
-            R0 = np.where(v0 < f, 1., 0.)
-            R = np.where(v < f, 1., 0.)
-
-            A = np.diag(1 + 2*alpha*a1 + 0.5*k*a3 + 0.5*k*a5*a4*R) + np.diag(-alpha*a1[:m-2] + beta, k=1) + np.diag(-alpha*a1[1:] - beta, k=-1)
-            B = np.diag(-1 + 2*alpha*a1 + 0.5*k*a3 + 0.5*k*a5*a4*R0) + np.diag(-alpha*a1[:m-2] + beta, k=1) + np.diag(-alpha*a1[1:] - beta, k=-1)
-
-            r0 = np.where(v0 >= f, 1., 0.)
-            r = np.where(v >= f, 1., 0.)
-
-            def func(w):
-                return np.matmul(A, w) + 0.5*k*a2*w**2 - 0.5*k*a4*(v - f)*r + np.matmul(B, w0) + 0.5*k*a2*w0**2 - 0.5*k*a4*(v0 - f)*r0
-
-            w = fsolve(func, w0)
-            u = np.empty(m)
-            u[0] = BC
-            u[1:] = w
-
-        elif not isTransient:
+            u[nz] = u[nz-1]
+        else:
             u = u0
 
         return u
@@ -533,21 +512,39 @@ class depo(object):
         '''calculates T=f(z) given updated `del`'''
         pass
 
-    def pressure_drop(self, P):
-        '''calculates P=f(z) given updated `del`'''
-        pass
+    def pressure_drop(self, dz, nz, dPf, dPg, dP):
+        '''calculates P=f(z) given updated "del"'''
+        fricFactor = self.fl.fricFactor
+        uz = self.fl.uz
+        rho = self.fl.rho
+        R_eff = self.fl.R_eff
+        for i in range(nz):
+            # friction pressure drop
+            dPf_i = fricFactor[i]*dz*uz[i]**2*rho[i]/(R_eff[i]*4)   # Darcy-Weisbach formula (Pa)
+            dPf += dPf_i
+            
+            # gravity pressure drop
+            dPg_i = dz*9.81*rho[i]      # Pa
+            dPg += dPg_i
+            
+            # sum pressure drop in segment
+            dP_i = dPf_i + dPg_i
+            
+            # cumulative dp
+            dP += dP_i
+        return dP
 
-    def ADEPT_Solver(self, T: np.array, P: np.array, GOR: np.array):
+    def ADEPT_Solver(self, T_prof: tuple, P_prof: tuple, GOR: float):
         '''
         Solves asphaltene deposition problem =f(t,z) using the ADEPT formulation
 
         Parameters
         ----------
-            T : np.array(float)
+            T : np.ndarray(float)
                 temperature profile (K)
-            P : np.array(float)
+            P : np.ndarray(float)
                 pressure profile (bar)
-            GOR : np.array(float)
+            GOR : np.ndarray(float)
                 Gas-Oil Ratio
             nz : int
                 number of z-axis points
@@ -596,38 +593,45 @@ class depo(object):
         kgOil = 0.
         kgAsp = 0.
         C_tol = 1.e-10
-        dT = 0.
-        dPf, dPg = 0.
-        
-        # pass input thermo properties to `fluid` object
-        self.df.GOR = GOR
-        self.df.P = P
-        self.df.T = T
-            
-        # discretize pipe into nz points
-        z = np.linspace(0, 1, nz)
+        t_noFlow = None
+        # dT = 0.
+        # dPf, dPg = 0.
 
-        # z-axis step size (=1/(nz-1))
-        dz = z[1] - z[0] 
+        nz = 200.
+        # nt = 100.
+        
+        z = np.linspace(0, L, nz)
+        xp = [0, L]
+        T = np.interp(z, xp, fp=T_prof)
+        P = np.interp(z, xp, fp=P_prof)
+
+        # pass input thermo properties to `fluid` object
+        self.fl.GOR = GOR*np.ones(nz)
+        self.fl.P = P
+        self.fl.T = T
+
+        # z-axis step size
+        dz = L/(nz - 1)
 
         # time-step size (s)
         # TODO: (next version) `dt` should be calculated from the characteristic time of deposit formation
-        dt = self.sim.t_sim/(nt - 1)
+        # dt = t_sim/(nt - 1)
+        dt = 0.5
 
         # populate array of depth (m). required for dP model
-        depth = np.linspace(L, 0, nz)
+        # depth = np.linspace(L, 0, nz)
 
         # initial conditions
         Cf0 = np.ones(nz)     # assumes all asphaltenes are soluble at t=0
         C0 = np.zeros(nz)     # assumes no primary particles (PP) at t=0
 
         # initial deposition thickness (del) along the pipe
-        if self.pipe.del_Asp0 is None or self.pipe.del_DM0 is None:
+        if self.pipe.del_Asp is None or self.pipe.del_DM is None:
             del_Asp = np.zeros(nz)
             del_DM = np.zeros(nz)
         else:
-            del_Asp = self.pipe.del_Asp0
-            del_DM = self.pipe.del_DM0
+            del_Asp = self.pipe.del_Asp
+            del_DM = self.pipe.del_DM
 
         #--- time-march loop ---
         flow_status = 'flowing'     # will exit time-march loop when flow_status != 'flowing'
@@ -662,17 +666,17 @@ class depo(object):
 
             #----- solve governing PDEs ----------------------------------------------         
             # solve for conc dissolved asphaltenes: Cf(t,z)
-            Cf = self.ADEPT_Solver_Cf(Cf0, nz, dt, dz, self.df, Cf_in, isTransient)
+            Cf = self.ADEPT_Solver_Cf(Cf0, nz, dt, dz, Cf_in, isTransient)
 
             # solve for conc primary particles: C(t,z)
-            C = self.ADEPT_Solver_C(C0, nz, dt, dz, self.fl, Cf0, Cf, C_in, isTransient)
+            C = self.ADEPT_Solver_C(C0, Cf0, nz, dt, dz, isTransient)
             #-------------------------------------------------------------------------
 
             # update initial concentrations for next time step
-            C_df = Cf - self.fl.Ceq     # update concentration driving force
+            C_fl = Cf - self.fl.Ceq     # update concentration driving force
             Cf = np.where(Cf < C_tol, 0., Cf)
             C = np.where(C < C_tol, 0., C)
-            C = np.where(C_df < C_tol, 0., C)
+            C = np.where(C_fl < C_tol, 0., C)
             Cf0 = Cf    # soluble asphaltenes
             C0 = C      # primary particles
 
@@ -711,37 +715,34 @@ class depo(object):
                 
             #-----/ depo flux (J) and thickness (del) calculation -----
 
-            #----- deposited Asp mass -----
-            # element length (m)
-            dL_m = L*dz
+            #----- deposited Asp mass ----
                 
             # volume (m3) and mass (kg) of deposit 
-            V_cyl = self.VolCylinder(dL_m, R, R - del_Asp)
+            V_cyl = self.VolCylinder(dz, R, R - del_Asp)
             mass_Asp = V_cyl*self.fl.dens_Asp
 
             #----- update `T,P` profiles -----
             # store dT, dP results from prev iteration
             # dT0 = dT
-            dPf0, dPg0 = dPf, dPg
+            # dPf0, dPg0 = dPf, dPg
             
-            # TODO: add energy balance model to calculate change in T profile as deposit builds; should consider heat transfer across pipe wall, solid deposit, and fluid.
-            # dT = self.energy_balance(self.fl)
+            # # TODO: add energy balance model to calculate change in T profile as deposit builds; should consider heat transfer across pipe wall, solid deposit, and fluid.
+            # # dT = self.energy_balance(self.fl)
             
-            # dP @ t; dP=(dPf=friction loss, dPg=gravity loss)
-            # TODO: change the inputs to this function to take the effective radius (R_eff) instead of `R` and `del_dm`
-            dPf, dPg = self.pressure_drop(self.sim.mFlow, L, R_eff, self.fl)
+            # # dP @ t; dP=(dPf=friction loss, dPg=gravity loss)
+            # dPf, dPg = self.pressure_drop()
             
-            # WHP, update wellhead pressure
-            WHP = BHP - (dPf + dPg)
+            # # WHP, update wellhead pressure
+            # WHP = BHP - (dPf + dPg)
         
-            # determine if well still flowing (fluid must be able to overcome pressure drop)
-            # exit loop if no flow, else update T,P profiles
-            if WHP < WHP_min:
-                t_noFlow = t
-                flow_status = 'shutdown; P drop too large'
-            else:          
-                # dPf/dt, friction pressure drop wrt time       
-                dPf_dt = (dPf0 - dPf) / dt
+            # # determine if well still flowing (fluid must be able to overcome pressure drop)
+            # # exit loop if no flow, else update T,P profiles
+            # if WHP < WHP_min:
+            #     t_noFlow = t
+            #     flow_status = 'shutdown; P drop too large'
+            # else:          
+            #     # dPf/dt, friction pressure drop wrt time       
+            #     dPf_dt = (dPf0 - dPf) / dt
 
                 # update T and P profiles
                 # if T_prof != 'cst':
@@ -752,33 +753,32 @@ class depo(object):
         #--/ time loop
 
         # vol flows (m3), oil and Asp
-        m3Oil = kgOil/self.fl.dens[0, 1]
-        m3Asp = kgAsp/self.fl.dens_Asp[0]
+        # m3Oil = kgOil/self.fl.dens[0, 1]
+        # m3Asp = kgAsp/self.fl.dens_Asp[0]
 
-        return depo_return()
+        return depo_return(flow_status, t_noFlow, del_Asp, del_DM, J_Asp, C, mass_Asp, self.fl)
 
 
 class depo_return(object):
     
-    def __init__(self, flow_status, t_noFlow, t_cuts, del_Asp, del_DM, J_Asp, C, Cag, Cd, mass_Asp, dP, dT):
+    def __init__(self, flow_status, t_noFlow, del_Asp, del_DM, J_Asp, C, mass_Asp, fluid_object, dP=0., dT=0.):
         '''
         object containing:
             flow_status: `flowing`, `shutdown`, `plugged`
             t @ noFlow:
-            t: time cuts
             thickness: del_Asp(t,z), del_DM(t,z)
             flux: J_Asp(t,z)
-            conc(t,z): C (primary particle), Cag (aggregates), Cd (deposit))
+            conc(t,z): C (primary particle)
             mass_Asp(t,z) 
             pressure drop: dP(t)
             temperature profile: dT(t)
         '''
         self.flow_status = flow_status
         self.t_noFlow = t_noFlow
-        self.t = t_cuts
         self.thickness = [del_Asp, del_DM]
         self.flux = J_Asp
-        self.conc = [C, Cag, Cd]
+        self.conc = C
         self.mass = mass_Asp
+        self.fluid = fluid_object
         self.pressure = dP
         self.temperature = dT

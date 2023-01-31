@@ -2,7 +2,7 @@
 import numpy as np
 import json
 from scipy.optimize import fsolve
-from scipy.interpolate import RegularGridInterpolator, interp1d
+from scipy.interpolate import RegularGridInterpolator
 
 # TODO: add a module level docstring (https://numpydoc.readthedocs.io/en/latest/format.html#documenting-modules) to this file
 # FIXME: the whole code!
@@ -392,7 +392,7 @@ class depo(object):
         uf = np.sqrt(tau/self.fl.rho)                                       # friction velocity, m/s
         del_wall = self.fl.mu/(self.fl.rho*uf)                              # wall layer thickness, m
         del_lam = 5*del_wall                                                # laminar boundary layer, m
-        del_mom = 125.4*self.pipe.R_eff*self.fl.Re**(-0.875)                   # momentum boundary layer, m
+        del_mom = 125.4*self.pipe.R_eff*self.fl.Re**(-0.875)                # momentum boundary layer, m
 
         # choose boundary layer
         delta = del_lam
@@ -441,12 +441,12 @@ class depo(object):
             u: Cf at (j+1)st step in t
         '''
         if isTransient:
-            alpha = 0.25*dt*self.fl.uz[1:]/dz
+            alpha = 0.25*dt*self.fl.uz/dz
             beta = 0.5*dt*self.fl.kP[1:]
             g = dt*self.fl.kP[1:]*self.fl.Ceq[1:]
 
-            A = np.diag(1 + beta) + np.diag(alpha*np.ones(nz-2), k=1) + np.diag(-alpha*np.ones(nz-2), k=-1)
-            B = np.diag(1 - beta) + np.diag(-alpha*np.ones(nz-2), k=1) + np.diag(alpha*np.ones(nz-2), k=-1)
+            A = np.diag(1 + beta) + np.diag(alpha[2:nz-1], k=1) + np.diag(-alpha[1:nz-2], k=-1)
+            B = np.diag(1 - beta) + np.diag(-alpha[2:nz-1], k=1) + np.diag(alpha[1:nz-2], k=-1)
 
             w0 = u0[1:]
             C = np.matmul(B, w0) + g
@@ -500,7 +500,7 @@ class depo(object):
             a5 = dt*self.fl.kD
             for i in range(1, nz-1):
                 r = v0[i] - self.fl.Ceq[i] if v0[i] - self.fl.Ceq[i] >= 0 else -self.fl.kDiss*u0[i]
-                u[i] = (1 - 2*a1 - a5)*u0[i] + (a1 - a2)*u0[i+1] + (a1 + a2)*u0[i-1] + a3*r - a4*u0[i]**2
+                u[i] = (1 - 2*a1[i] - a5[i])*u0[i] + (a1[i] - a2[i])*u0[i+1] + (a1[i] + a2[i])*u0[i-1] + a3[i]*r - a4[i]*u0[i]**2
 
             u[nz] = u[nz-1]
         else:
@@ -508,31 +508,31 @@ class depo(object):
 
         return u
 
-    def energy_balance(self, T):
-        '''calculates T=f(z) given updated `del`'''
-        pass
+    # def energy_balance(self, T):
+    #     '''calculates T=f(z) given updated `del`'''
+    #     pass
 
-    def pressure_drop(self, dz, nz, dPf, dPg, dP):
-        '''calculates P=f(z) given updated "del"'''
-        fricFactor = self.fl.fricFactor
-        uz = self.fl.uz
-        rho = self.fl.rho
-        R_eff = self.fl.R_eff
-        for i in range(nz):
-            # friction pressure drop
-            dPf_i = fricFactor[i]*dz*uz[i]**2*rho[i]/(R_eff[i]*4)   # Darcy-Weisbach formula (Pa)
-            dPf += dPf_i
+    # def pressure_drop(self, dz, nz, dPf, dPg, dP):
+    #     '''calculates P=f(z) given updated "del"'''
+    #     fricFactor = self.fl.fricFactor
+    #     uz = self.fl.uz
+    #     rho = self.fl.rho
+    #     R_eff = self.fl.R_eff
+    #     for i in range(nz):
+    #         # friction pressure drop
+    #         dPf_i = fricFactor[i]*dz*uz[i]**2*rho[i]/(R_eff[i]*4)   # Darcy-Weisbach formula (Pa)
+    #         dPf += dPf_i
             
-            # gravity pressure drop
-            dPg_i = dz*9.81*rho[i]      # Pa
-            dPg += dPg_i
+    #         # gravity pressure drop
+    #         dPg_i = dz*9.81*rho[i]      # Pa
+    #         dPg += dPg_i
             
-            # sum pressure drop in segment
-            dP_i = dPf_i + dPg_i
+    #         # sum pressure drop in segment
+    #         dP_i = dPf_i + dPg_i
             
-            # cumulative dp
-            dP += dP_i
-        return dP
+    #         # cumulative dp
+    #         dP += dP_i
+    #     return dP
 
     def ADEPT_Solver(self, T_prof: tuple, P_prof: tuple, GOR: float):
         '''

@@ -515,20 +515,36 @@ class depo(object):
             u: Cf at (j+1)st step in t
         '''
         if self.sim.isTransient:
-            a1 = -self.sim.dtau / self.sim.dZ
-            a2 = 1. + self.sim.dtau / self.sim.dZ + self.sim.dtau * self.fl.Da_P
-            b1 = u0 + self.sim.dtau * self.fl.Da_P * self.fl.Ceq
+            # Implicit
+            # alpha = self.sim.dtau/self.sim.dZ
+            # beta = self.sim.dtau*self.fl.Da_P
+            # gamma = self.sim.dtau*self.fl.Da_P*self.fl.Ceq
 
-            A = np.diag(a2) + np.diag(a1[1:nZ], k=-1)
+            # A = np.diag(1. + alpha + beta) - np.diag(alpha[1:], k=-1)
+            # B = u0 + gamma
+
+            # A[0, 0] = 1.
+            # B[0] = 1.
+
+            # # Solves linear system A*u = B
+            # u = np.linalg.solve(A, B)
+            # u[0] = BC
+
+            # Crank-Nicolson
+            alpha = 0.5*self.sim.dtau/self.sim.dZ
+            beta = 0.5*self.sim.dtau*self.fl.Da_P
+            gamma = self.sim.dtau*self.fl.Da_P*self.fl.Ceq
+
+            A = np.diag(1. + alpha + beta) - np.diag(alpha[1:], k=-1)
+            B = np.diag(1. - alpha - beta) + np.diag(alpha[1:], k=-1)
+            C = np.matmul(B, u0) + gamma
+
             A[0, 0] = 1.
-            B = b1
-            B[0] = 1.
+            C[0] = 1.
 
-            # Solves linear system Aw = C
-            w = np.linalg.solve(A, B)
-
-            u = w
-            u[0] = 1.
+            # Solves linear system A*u = C
+            u = np.linalg.solve(A, C)
+            u[0] = BC
         else:
             u = u0
 
@@ -563,48 +579,40 @@ class depo(object):
             u: C at (j+1)st step in t
         '''
         if self.sim.isTransient: 
-            # initial guess
-            # C_guess = 1. - v
-            # C_guess[-1] = C_guess[-2]
-            #C_guess = np.where(np.abs(C_guess) < 1.e-12, 0., C_guess)
+            # Crank-Nicolson
 
-            def func(u):
-                # driving force
-                u_df = v - self.fl.Ceq
-                u_df = np.where(np.abs(u_df) < 1.e-12, 0., u_df)
+            # driving force
+            u_df = v - self.fl.Ceq
+            u_df = np.where(np.abs(u_df) < 1.e-12, 0., u_df)
+            u_df0 = v0 - self.fl.Ceq
+            u_df0 = np.where(np.abs(u_df0) < 1.e-12, 0., u_df0)
 
-                # define coefficients of node equations
-                a0 = 1 / (self.fl.Pe*self.sim.dZ**2)
-                a20 = 1/self.sim.dZ + 2*a0 + self.fl.Da_D
-                A1 = self.sim.dtau*(1/self.sim.dZ + a0)
-                A3 = -self.sim.dtau*self.fl.Da_Ag
-                A4 = self.sim.dtau*a0
-                A0 = self.sim.dtau*np.where(u_df >= 0., self.fl.Da_P*u_df, 0.)
-                A2 = self.sim.dtau*np.where(u_df >= 0., -a20, -a20 - self.fl.kDiss*self.fl.Da_P)
-            
-                f = np.zeros(nZ)
-                # populate vector of objectives (f) and Jacobian (Ja)
-                for i in range(1, nZ-1):
-                    f[i] = (A1[i]*u[i-1]) + (A2[i]*u[i] + A3[i]*u[i]**2) + (A4[i]*u[i+1]) + A0[i]
+            # define coefficients of node equations
+            alpha = 0.5*self.sim.dtau/(self.fl.Pe*self.sim.dZ**2)
+            beta = 0.5*self.sim.dtau/self.sim.dZ
+            gamma = 0.5*self.sim.dtau*self.fl.Da_P
+            delta = 0.5*self.sim.dtau*self.fl.Da_Ag
+            epsilon = 0.5*self.sim.dtau*self.fl.Da_D
 
-                Ja = np.diag(A2 + 2*A3*u) + np.diag(A1[1:], k=-1) + np.diag(A4[:nZ-1], k=1)
+            Ja = np.diag(1 + 2*alpha + beta + epsilon - self.fl.kDiss*np.heaviside(-u_df, 0)) - np.diag(alpha[:nZ-1], k=1) - np.diag(alpha[1:] + beta[1:], k=-1) 
+            Ja[0, 0] = 1.
+            B = np.diag(-1 + 2*alpha + beta + epsilon) - np.diag(alpha[:nZ-1], k=1) - np.diag(alpha[1:] + beta[1:], k=-1)
+            C = np.matmul(B, u0)
+            r = u_df*np.heaviside(u_df, 1)
+            r0 = u_df0*np.heaviside(u_df0, 1) - self.fl.kDiss*u0*np.heaviside(-u_df0, 0)
+            f = C - gamma*(r + r0) + delta*u0**2
+            f[0] = BC
 
-                f[0] = u[0] - BC
-                # f[-1] = u[-1] - u[-2]
-                Ja[0, 0] = 1.
-                Ja[0, 1] = 0.
-                # Ja[-1, -2] = -1.
-                # Ja[-1, -1] = 1.
-
-                return np.matmul(Ja, u) + f
+            def func(x):
+                return np.matmul(Ja, x) + delta*x**2 + f
 
             # finds the roots of func(u) = 0
-            C = fsolve(func, u0)
-            print(func(C))
+            u = fsolve(func, u0)
+            u[0] = 0.
         else:
-            C = u0
+            u = u0
 
-        return C
+        return u
 
     # def energy_balance(self, T):
     #     '''calculates T=f(z) given updated `del`'''
@@ -713,7 +721,7 @@ class depo(object):
 
         # time-step size (s)
         # TODO: (next version) `dt` should be calculated from the characteristic time of deposit formation
-        self.sim.dt = 86400.
+        self.sim.dt = 3600.
 
         # initial conditions
         Cf0 = np.ones(nZ)     # assumes all asphaltenes are soluble at t=0
@@ -817,7 +825,7 @@ class depo(object):
 
             # thickness of asphaltenes and DM deposit (m) (Assumes R >> del which is a good approx for small dt)
             # TODO: I want to write the thickness calculation such that it applies to R ~ del
-            rho_Asp = np.average(self.fl.dens_Asp)
+            rho_Asp = np.average(self.fl.dens_Asp*self.fl.yAsp[:, 2])
             rho_DM = np.average(self.fl.dens[:, 2]*self.fl.yAsp[:, 2])
             del_Asp_z = self.sim.dt*J_Asp/rho_Asp
             del_DM_z = self.sim.dt*J_Asp/rho_DM

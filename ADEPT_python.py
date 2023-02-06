@@ -1,6 +1,7 @@
 # import packages
 import numpy as np
 import json
+import matplotlib.pyplot as plt
 from scipy.optimize import fsolve
 from scipy.interpolate import RegularGridInterpolator, griddata
 import itertools
@@ -497,95 +498,118 @@ class depo(object):
         # Dimensionless time step
         self.sim.dtau = self.sim.dt/self.fl.t_res
 
-    def ADEPT_Solver_Cf(self, u0, nZ, BC):
+    def ADEPT_Solver_Cf(self, u_old, nZ, BC):
         '''
-        Solves PDE for dissolved asphaltene concentration (gAsp_L1 / gAsp_Ovr)
-        dCf/dt + v_z*dCf/dz + kP*Cf = kP*Ceq
-        IC: Cf(z, t=0) = 1    (all Asp dissolved at t=0)
-        BC: Cf(z=0, t) = 1    (all Asp dissolved at z=0)
+        Solves PDE for dissolved asphaltene concentration (gAsp_L1 / gAsp_Ovr).
 
-        input
-            u0: Cf at j-th step in t
-            nz: number of z-axis steps
-            dt: time step size (=T/N)
-            dz: z-axis step size (=L/m)
-            BC: boundary condition at inlet (z=0)
-            isTransient: transient or steady-state (dCf/dt = 0)
-        output
-            u: Cf at (j+1)st step in t
+        Parameters
+        ----------
+        u_old : ndarray 
+            Cf at jth step in tau.
+        nZ : int 
+            Number of Z-axis steps.
+        dtau : ndarray
+            Dimensionless time step size.
+        dZ : float
+            Z-axis step size (= 1/(nZ-1)).
+        BC : float 
+            Boundary condition at inlet (Z=0).
+        isTransient : bool 
+            Transient or steady-state (dCf/dtau = 0).
+
+        Returns
+        -------
+        u_new : ndarray 
+            Cf at (j+1)st step in tau.
+
+        Notes
+        -----
+        Solves the PDE:
+        dCf/dtau + dCf/dZ + Da_P*Cf = Da_P*Ceq
+
+        Subject to the conditions:
+        IC: Cf(Z, tau=0) = 1    (all Asp dissolved at tau=0)
+        BC: Cf(Z=0, tau) = 1    (all Asp dissolved at Z=0)
+
+        Using a Crank-Nicolson scheme (unconditionally stable). 
+        For more information read the markdown file "PDE_solutions.md"
         '''
         if self.sim.isTransient:
-            # Implicit
-            # alpha = self.sim.dtau/self.sim.dZ
-            # beta = self.sim.dtau*self.fl.Da_P
-            # gamma = self.sim.dtau*self.fl.Da_P*self.fl.Ceq
-
-            # A = np.diag(1. + alpha + beta) - np.diag(alpha[1:], k=-1)
-            # B = u0 + gamma
-
-            # A[0, 0] = 1.
-            # B[0] = 1.
-
-            # # Solves linear system A*u = B
-            # u = np.linalg.solve(A, B)
-            # u[0] = BC
-
-            # Crank-Nicolson
             alpha = 0.5*self.sim.dtau/self.sim.dZ
             beta = 0.5*self.sim.dtau*self.fl.Da_P
             gamma = self.sim.dtau*self.fl.Da_P*self.fl.Ceq
 
-            A = np.diag(1. + alpha + beta) - np.diag(alpha[1:], k=-1)
-            B = np.diag(1. - alpha - beta) + np.diag(alpha[1:], k=-1)
-            C = np.matmul(B, u0) + gamma
+            A = np.diag(1. + alpha[1:] + beta[1:]) - np.diag(alpha[2:], k=-1)
+            B = np.diag(1. - alpha[1:] - beta[1:]) + np.diag(alpha[2:], k=-1)
+            
+            w_old = u_old[1:]
+            w0_old = u_old[0]
+            w0_new = BC
+            b = gamma[1:]
+            b[0] = alpha[1]*(w0_new + w0_old) + gamma[1]
+            c = np.matmul(B, w_old) + b
 
-            A[0, 0] = 1.
-            C[0] = 1.
+            # Solves linear system A*w_new = B*w_old + b = c
+            w_new = np.linalg.solve(A, c)
 
-            # Solves linear system A*u = C
-            u = np.linalg.solve(A, C)
-            u[0] = BC
+            u_new = np.zeros(nZ)
+            u_new[1:] = w_new
+            u_new[0] = BC
         else:
-            u = u0
+            u_new = u_old
 
-        return u
+        # z = np.linspace(0, 1, nZ)
+        # plt.plot(z, u_new)
+        # plt.show()
+        return u_new
 
-    def ADEPT_Solver_C(self, u0, v0, v, nZ, BC):
+    def ADEPT_Solver_C(self, u_old, v_old, v_new, nZ, BC1):
         '''
-        Solves PDE for primary particle concentration:
-        dC/dt = 1/Pe*d2C/dz2 - dC/dz + rp - Da_ag*C^2 - Da_d*C
-        rp = Da_p*(Cf-Ceq)      for Cf > Ceq (precipitation)
-        rp = -kDiss.Da_p.C      for Cf < Ceq (redissolution)
-        IC: C(z, t=0) = 0       (no PP at t=0)
-        BC1: C(z=0, t) = 0      (no PP at z=0) 
-        BC2: dC/dz(z=1) = 0     (no gradient at end of pipe)?? NOT IMPLEMENTED YET!!
+        Solves PDE for primary particle concentration
 
-        input
-            u0: C at j-th step in t
-            m: number of z-axis steps
-            k: time step size (=T/N)
-            h: z-axis step size (=L/m)
-            A1: Pe, Peclet number
-            A2: Da_Ag at j-th step in t
-            A3: Da_D at j-th step in t
-            A4: Da_P at j-th step in t
-            A5: kDiss at j-th step in t
-            V0: Cf at j-th step in t
-            V: Cf at (j+1)st step in t
-            F: Ceq at j-th step in t
-            BC: boundary condition at inlet (z=0)
-            isTransient: transient or steady-state (dCf/dt = 0)
-        output
-            u: C at (j+1)st step in t
+        Parameters
+        ----------
+        u_old : ndarray 
+            C at jth step in tau.
+        v_old : ndarray 
+            Cf at jth step in tau.
+        v_new : ndarray 
+            Cf at (j+1)st step in tau.
+        nZ : int 
+            Number of Z-axis steps.
+        dtau : ndarray
+            Dimensionless time step size.
+        dZ : float
+            Z-axis step size (= 1/(nZ-1)).
+        BC1 : float 
+            Boundary condition at inlet (Z=0).
+        isTransient : bool 
+            Transient or steady-state (dCf/dtau = 0).
+
+        Returns
+        -------
+        u_new : ndarray 
+            C at (j+1)st step in tau.
+
+        Notes
+        -----
+        Solves the PDE:
+        dC/dtau = 1/Pe*d^2C/dZ^2 - dC/dz + Da_p*rp - Da_ag*C^2 - Da_d*C
+        rp = Cf-Ceq     for Cf >= Ceq (precipitation)
+        rp = -kDiss*C   for Cf < Ceq (redissolution)
+
+        Subject to the conditions:
+        IC: C(Z, 0) = 0         (no PP at t=0)
+        BC1: C(0, tau) = 0      (no PP at z=0) 
+        BC2: dC/dZ(1, tau) = 0  (no gradient at end of pipe)
+
+        Using a Crank-Nicolson scheme (unconditionally stable). 
+        For more information read the markdown file "PDE_solutions.md"
         '''
         if self.sim.isTransient: 
-            # Crank-Nicolson
-
             # driving force
-            u_df = v - self.fl.Ceq
-            u_df = np.where(np.abs(u_df) < 1.e-12, 0., u_df)
-            u_df0 = v0 - self.fl.Ceq
-            u_df0 = np.where(np.abs(u_df0) < 1.e-12, 0., u_df0)
+            F_new = v_new - self.fl.Ceq
+            F_old = v_old - self.fl.Ceq
 
             # define coefficients of node equations
             alpha = 0.5*self.sim.dtau/(self.fl.Pe*self.sim.dZ**2)
@@ -594,25 +618,34 @@ class depo(object):
             delta = 0.5*self.sim.dtau*self.fl.Da_Ag
             epsilon = 0.5*self.sim.dtau*self.fl.Da_D
 
-            Ja = np.diag(1 + 2*alpha + beta + epsilon - self.fl.kDiss*np.heaviside(-u_df, 0)) - np.diag(alpha[:nZ-1], k=1) - np.diag(alpha[1:] + beta[1:], k=-1) 
-            Ja[0, 0] = 1.
-            B = np.diag(-1 + 2*alpha + beta + epsilon) - np.diag(alpha[:nZ-1], k=1) - np.diag(alpha[1:] + beta[1:], k=-1)
-            C = np.matmul(B, u0)
-            r = u_df*np.heaviside(u_df, 1)
-            r0 = u_df0*np.heaviside(u_df0, 1) - self.fl.kDiss*u0*np.heaviside(-u_df0, 0)
-            f = C - gamma*(r + r0) + delta*u0**2
-            f[0] = BC
+            w_old = u_old[1:nZ-1]
+            w0_old = BC1
+            w0_new = BC1
 
-            def func(x):
-                return np.matmul(Ja, x) + delta*x**2 + f
+            A = np.diag(1 + 2*alpha[1:nZ-1] + beta[1:nZ-1] + gamma[1:nZ-1]*self.fl.kDiss*np.heaviside(-F_new[1:nZ-1], 0.) + epsilon[1:nZ-1]) - np.diag(alpha[1:nZ-2], k=1) - np.diag(alpha[2:nZ-1] + beta[2:nZ-1], k=-1)
+            B = np.diag(-1 + 2*alpha[1:nZ-1] + beta[1:nZ-1] + gamma[1:nZ-1]*self.fl.kDiss*np.heaviside(-F_old[1:nZ-1], 0.) + epsilon[1:nZ-1]) - np.diag(alpha[1:nZ-2], k=1) - np.diag(alpha[2:nZ-1] + beta[2:nZ-1], k=-1)
+            f = -gamma[1:nZ-1]*(F_new[1:nZ-1]*np.heaviside(F_new[1:nZ-1], 1.) + F_old[1:nZ-1]*np.heaviside(F_old[1:nZ-1], 1.)) + delta[1:nZ-1]*w_old**2
+            f[0] += -(alpha[1] + beta[1])*(w0_new + w0_old)
+            Bw_old = np.matmul(B, w_old)
+
+            def func(w_new):
+                wlast_old = u_old[-1]
+                wlast_new = w_new[-1]   # forward-difference approximation
+                f[-1] = -gamma[-2]*(F_new[-2]*np.heaviside(F_new[-2], 1.) + F_old[-2]*np.heaviside(F_old[-2], 1.)) + delta[-2]*w_old[-1]**2
+                f[-1] += -alpha[-2]*(wlast_new + wlast_old)     # BC2
+                return np.matmul(A, w_new) + Bw_old + delta[1:nZ-1]*w_new**2 + f
 
             # finds the roots of func(u) = 0
-            u = fsolve(func, u0)
-            u[0] = 0.
-        else:
-            u = u0
+            w_new = fsolve(func, w_old)
+            u_new = np.zeros(nZ)
+            u_new[0] = w0_new
+            u_new[1:nZ-1] = w_new
+            u_new[-1] = u_new[-2]
 
-        return u
+        # z = np.linspace(0, 1, nZ)
+        # plt.plot(z, u_new)
+        # plt.show()
+        return u_new
 
     # def energy_balance(self, T):
     #     '''calculates T=f(z) given updated `del`'''

@@ -107,8 +107,3 @@ def get_dict_from_input(LUT: dict or json or Path or str)->dict:
         with open(LUT, 'r') as json_file:
             return json.load(json_file)
         
-# TEST
-file_name = r'C:\Users\cjsis\Documents\Github\ENNOVA\ADEPT\data\Fluid-LUT\PC003-PR78.json'
-data = json_to_stdUnits(file_name)
-
-print(type(data))

@@ -46,14 +46,15 @@ class pipe(object):
 
 class sim(object):
     
-    def __init__(self, t_sim: float, mFlow: float, isTransient: bool=True) -> None:
+    def __init__(self, t_sim: float, vFlow: float, isTransient: bool=True) -> None:
         '''
         t_sim: simulation time (s)
         mFlow: mass flow rate (kg/s)
+        vFlow: volume flow rate (STB/day)
         isTransient: {True=transient, False=steady-state}
         '''
         self.t_sim = t_sim
-        self.mFlow = mFlow
+        self.vFlow = vFlow*0.0000018401307  #(m3/s)
         self.isTransient = isTransient
 
 
@@ -145,7 +146,7 @@ class depo(object):
         prop_unit = prop_dict['prop_unit']
         coord_label = prop_dict['coord_label']
         GOR_range = np.array(prop_dict[coord_label[0]])
-        P_range = np.array(prop_dict[coord_label[1]])
+        P_range = np.array(prop_dict[coord_label[1]])       # not to be confused with P_prof, T_prof
         T_range = np.array(prop_dict[coord_label[2]])
         crange = (GOR_range, P_range, T_range)
 
@@ -153,8 +154,8 @@ class depo(object):
         # FLUT = self.preproc(FLUT, crange, prop_label)
 
         # unit conversion
-        P_range = P_range*0.0689475729
-        T_range = (5/9)*(T_range-32.)+273.15
+        # P_range = P_range*0.0689475729
+        # T_range = (5/9)*(T_range-32.)+273.15
 
         return (FLUT, prop_label, prop_unit, GOR_range, P_range, T_range)
 
@@ -673,7 +674,7 @@ class depo(object):
     #         dP += dP_i
     #     return dP
 
-    def ADEPT_Solver(self, T_prof: tuple, P_prof: tuple, GOR: float, VBA_dict: dict):
+    def ADEPT_Solver(self, T_prof: tuple, P_prof: tuple, GOR: float):
         '''
         Solves asphaltene deposition problem =f(t,z) using the ADEPT formulation
 
@@ -727,11 +728,10 @@ class depo(object):
         self.pipe.V = self.VolCylinder(L, R)    # total tubing volume
         C_in = 0.                               # concentration of primary particles (C) at inlet (z=0)
         Cf_in = 1.                              # concentration of dissolved asphaltenes (Cf) at inlet (z=0)
-        BHP = 1.e6                              # dummy value of bottom-hole P
+        # BHP = 1.e6                            # dummy value of bottom-hole P
         kgOil = 0.
         kgAsp = 0.
         C_tol = 1.e-10
-        tol_J = 1.e-10
         t_noFlow = None
         # dT = 0.
         # dPf, dPg = 0.
@@ -739,6 +739,7 @@ class depo(object):
         nZ = 200
         # nt = 100.
         
+        # (Bottomhole -> Wellhead)
         z = np.linspace(0., 1, nZ)
         xp = [0, 1]
         T = np.interp(z, xp, fp=T_prof)
@@ -770,31 +771,6 @@ class depo(object):
 
         # extract thermo and transport properties from FLUT at each spatial point
         self.FLUT_extractor()
-
-        # TEMP: test with values from ADEPT-VBA file
-        # VBA_dict = json.load(VBA_json)
-        self.fl.Ceq = np.array(VBA_dict['Ceq'])
-        self.fl.yAsp[:, 0] = np.array(VBA_dict['yAsp_V'])
-        self.fl.yAsp[:, 1] = np.array(VBA_dict['yAsp_L1'])
-        self.fl.yAsp[:, 2] = np.array(VBA_dict['yAsp_L2'])
-        self.fl.wtFrac[:, 0] = np.array(VBA_dict['wtFrac_V'])
-        self.fl.wtFrac[:, 1] = np.array(VBA_dict['wtFrac_L1'])
-        self.fl.wtFrac[:, 2] = np.array(VBA_dict['wtFrac_L2'])
-        self.fl.volFrac[:, 0] = np.array(VBA_dict['volFrac_V'])
-        self.fl.volFrac[:, 1] = np.array(VBA_dict['volFrac_L1'])
-        self.fl.volFrac[:, 2] = np.array(VBA_dict['volFrac_L2'])
-        self.fl.dens[:, 0] = np.array(VBA_dict['dens_V'])
-        self.fl.dens[:, 1] = np.array(VBA_dict['dens_L1'])
-        self.fl.dens[:, 2] = np.array(VBA_dict['dens_L2'])
-        self.fl.dens_Asp = np.array(VBA_dict['dens_Asp'])
-        self.fl.SP[:, 0] = np.array(VBA_dict['SP_V'])
-        self.fl.SP[:, 1] = np.array(VBA_dict['SP_L1'])
-        self.fl.SP[:, 2] = np.array(VBA_dict['SP_L2'])
-        self.fl.SP_Asp = np.array(VBA_dict['SP_Asp'])
-        self.fl.visco[:, 0] = np.array(VBA_dict['visco_V'])
-        self.fl.visco[:, 1] = np.array(VBA_dict['visco_L1'])
-        self.fl.visco[:, 2] = np.array(VBA_dict['visco_L2'])
-        # /TEMP
 
         #--- time-march loop ---
         flow_status = 'flowing'     # will exit time-march loop when flow_status != 'flowing'
